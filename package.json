@@ -1,0 +1,11 @@
+{
+  "name": "seven-applicant-form",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "echo 'Nothing to build'"
+  },
+  "dependencies": {
+    "@sendgrid/mail": "^7.7.0"
+  }
+}
