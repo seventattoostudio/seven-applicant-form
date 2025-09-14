@@ -2,10 +2,12 @@
   "name": "seven-applicant-form",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "scripts": {
-    "build": "echo 'Nothing to build'"
+    "dev": "netlify dev",
+    "deploy": "netlify deploy --prod"
   },
   "dependencies": {
-    "@sendgrid/mail": "^7.7.0"
+    "@sendgrid/mail": "^8.1.0"
   }
 }
