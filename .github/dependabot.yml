@@ -1,0 +1,44 @@
+version: 2
+updates:
+  # 1) Netlify function dependencies (npm)
+  - package-ecosystem: npm
+    directory: /netlify/functions
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: America/Los_Angeles
+    allow:
+      - dependency-type: direct
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(npm)"
+    # Group patches/minors so you don’t drown in PRs
+    groups:
+      security-fixes:
+        applies-to: security-updates
+        update-types: [patch, minor]
+      routine-minors:
+        update-types: [minor]
+    # Hold back majors unless you’re ready to test
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    labels: ["dependabot", "security"]
+    pull-request-branch-name:
+      separator: "/"
+
+  # 2) GitHub Actions in this repo
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:15"
+      timezone: America/Los_Angeles
+    commit-message:
+      prefix: "deps(actions)"
+    groups:
+      actions:
+        patterns: ["*"]
+    labels: ["dependabot"]
