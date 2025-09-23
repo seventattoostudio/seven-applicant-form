@@ -8,6 +8,7 @@
     "deploy": "netlify deploy --prod"
   },
   "dependencies": {
-    "@sendgrid/mail": "^8.1.0"
+    "@sendgrid/mail": "^8.1.0",
+    "nodemailer": "^7.0.6"
   }
 }
