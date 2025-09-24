@@ -1,10 +1,9 @@
 // netlify/functions/submit-staff.js
-// Handles Staff applications only: sends internal email + confirmation to applicant.
+// Handles Staff applications: internal email + confirmation to applicant.
 
 const nodemailer = require("nodemailer");
 
-// ---- helpers ---------------------------------------------------------------
-
+// -------------------- helpers --------------------
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "Content-Type",
@@ -19,9 +18,6 @@ const isTruthy = (v) =>
 const requiredMissing = (body, fields) =>
   fields.filter((f) => body[f] == null || String(body[f]).trim() === "");
 
-/**
- * Try to parse JSON; if not JSON, try x-www-form-urlencoded
- */
 const parseBody = (raw, headers = {}) => {
   const ct = (
     headers["content-type"] ||
@@ -39,7 +35,6 @@ const parseBody = (raw, headers = {}) => {
     const params = new URLSearchParams(raw || "");
     return Object.fromEntries(params.entries());
   }
-  // Fallback: try JSON then empty
   try {
     return JSON.parse(raw || "{}");
   } catch {
@@ -47,22 +42,30 @@ const parseBody = (raw, headers = {}) => {
   }
 };
 
+// Use SendGrid via Nodemailer
 const makeTransport = () =>
   nodemailer.createTransport({
-    host: process.env.SMTP_HOST,
-    port: Number(process.env.SMTP_PORT || 587),
-    secure: String(process.env.SMTP_PORT || "") === "465",
-    auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+    service: "SendGrid",
+    auth: { user: "apikey", pass: process.env.SENDGRID_API_KEY }, // 'apikey' is literal
   });
 
-// ---- email templates -------------------------------------------------------
+// small utilities for safety/formatting
+const escapeHtml = (s = "") =>
+  String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+const nl2br = (s = "") => escapeHtml(s).replace(/\n/g, "<br>");
+const oneLine = (s = "") => String(s).replace(/\s+/g, " ").trim();
 
+// -------------------- email templates --------------------
 const internalEmailHtml = (d) => `
   <h2>New Staff Application</h2>
-  <p><strong>Full Name:</strong> ${d.fullName}</p>
-  <p><strong>Phone:</strong> ${d.phone}</p>
-  <p><strong>Email:</strong> ${d.email}</p>
-  <p><strong>City/Location:</strong> ${d.city}</p>
+  <p><strong>Full Name:</strong> ${escapeHtml(d.fullName)}</p>
+  <p><strong>Phone:</strong> ${escapeHtml(d.phone)}</p>
+  <p><strong>Email:</strong> ${escapeHtml(d.email)}</p>
+  <p><strong>City/Location:</strong> ${escapeHtml(d.city)}</p>
   <hr/>
   <p><strong>What do you need from a workplace to feel secure and grow?</strong><br>${nl2br(
     d.needFromWorkplace
@@ -115,29 +118,11 @@ const applicantEmailHtml = (d) => `
 const applicantEmailText = (d) =>
   `Thanks ${d.fullName}! We received your Staff application. We review within 48 hours.\n\n— Seven Tattoo`;
 
-// small utilities for safety/formatting
-function escapeHtml(s = "") {
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-function nl2br(s = "") {
-  return escapeHtml(s).replace(/\n/g, "<br>");
-}
-function oneLine(s = "") {
-  return String(s).replace(/\s+/g, " ").trim();
-}
-
-// ---- handler ---------------------------------------------------------------
-
+// -------------------- handler --------------------
 exports.handler = async (event) => {
-  // CORS preflight
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 204, headers: corsHeaders };
   }
-
   if (event.httpMethod !== "POST") {
     return { statusCode: 405, body: "Method Not Allowed" };
   }
@@ -145,7 +130,7 @@ exports.handler = async (event) => {
   try {
     const body = parseBody(event.body, event.headers);
 
-    // Honeypot: if filled, block
+    // Honeypot to block bots
     if (body.hp && String(body.hp).trim().length > 0) {
       return {
         statusCode: 400,
@@ -185,7 +170,6 @@ exports.handler = async (event) => {
       source: String(body.source || "").trim(),
     };
 
-    // Send emails
     const transporter = makeTransport();
 
     // 1) Internal inbox
@@ -195,7 +179,7 @@ exports.handler = async (event) => {
       subject: `Staff Application — ${data.fullName}`,
       html: internalEmailHtml(data),
       text: internalEmailText(data),
-      replyTo: data.email, // reply goes to applicant
+      replyTo: data.email, // replies go to the applicant
     });
 
     // 2) Confirmation to applicant
