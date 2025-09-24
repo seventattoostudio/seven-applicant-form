@@ -1,187 +1,184 @@
 // netlify/functions/submit-artist.cjs
-// Handles Artist applications: internal email + confirmation to applicant (SendGrid via Nodemailer)
-
 const nodemailer = require("nodemailer");
 
-/* ---------------------------- helpers ---------------------------- */
+const CORS_ORIGIN = process.env.CORS_ORIGIN || "*"; // set your domain later
 const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Origin": CORS_ORIGIN,
   "Access-Control-Allow-Methods": "POST,OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
 };
 
-const isTruthy = (v) =>
-  ["true", "on", "yes", "1", 1, true].includes(
-    typeof v === "string" ? v.toLowerCase() : v
+function ok(body) {
+  return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(body) };
+}
+function bad(msg) {
+  return {
+    statusCode: 400,
+    headers: corsHeaders,
+    body: JSON.stringify({ ok: false, error: msg }),
+  };
+}
+function oops(msg) {
+  return {
+    statusCode: 500,
+    headers: corsHeaders,
+    body: JSON.stringify({ ok: false, error: msg }),
+  };
+}
+
+function readJson(event) {
+  try {
+    if (!event.body) return {};
+    const raw = event.isBase64Encoded
+      ? Buffer.from(event.body, "base64").toString("utf8")
+      : event.body;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+// alias Shopify → internal names
+function mapFields(input) {
+  const v = (x) => (typeof x === "string" ? x.trim() : x);
+
+  const fullName =
+    v(input.fullName) ||
+    v(input.name) ||
+    v(input.full_name) ||
+    v(input.applicant_name);
+  const phone = v(input.phone) || v(input.phone_number) || v(input.tel);
+  const email = v(input.email) || v(input.applicant_email);
+  const city = v(input.city) || v(input.location) || v(input.city_location);
+
+  const igHandle =
+    v(input.ig_handle) || v(input.instagram) || v(input.instagram_handle);
+  const portfolioLink =
+    v(input.portfolio) ||
+    v(input.portfolio_link) ||
+    v(input.website) ||
+    v(input.url) ||
+    v(input.link);
+
+  const proud =
+    v(input.q_proud) ||
+    v(input.proud) ||
+    v(input.q_vision) ||
+    v(input.question_proud);
+  const commitment =
+    v(input.q_commitment) || v(input.commitment) || v(input.long_term);
+
+  const agreeSanitationRaw =
+    input.agree_sanitation ??
+    input.agreeSanitation ??
+    input.sanitation ??
+    input.agree;
+  const agreeSanitation = ["true", "on", "yes", "1"].includes(
+    String(agreeSanitationRaw).toLowerCase()
   );
 
-const requiredMissing = (body, fields) =>
-  fields.filter((f) => body[f] == null || String(body[f]).trim() === "");
+  const videoUrl =
+    v(input.video_url) ||
+    v(input.video) ||
+    v(input.resume_link) ||
+    v(input.video_intro);
 
-const parseBody = (raw, headers = {}) => {
-  const ct = (headers["content-type"] || headers["Content-Type"] || "").toLowerCase();
-  if (ct.includes("application/json")) {
-    try { return JSON.parse(raw || "{}"); } catch { return {}; }
-  }
-  if (ct.includes("application/x-www-form-urlencoded")) {
-    const params = new URLSearchParams(raw || "");
-    return Object.fromEntries(params.entries());
-  }
-  try { return JSON.parse(raw || "{}"); } catch { return {}; }
-};
+  return {
+    fullName,
+    phone,
+    email,
+    city,
+    igHandle,
+    portfolioLink,
+    proud,
+    commitment,
+    agreeSanitation,
+    videoUrl,
+    raw: input,
+  };
+}
 
-// Use SendGrid via Nodemailer. You must set SENDGRID_API_KEY, FROM_EMAIL, INTERNAL_EMAIL in Netlify.
-const makeTransport = () =>
-  nodemailer.createTransport({
-    service: "SendGrid",
-    auth: { user: "apikey", pass: process.env.SENDGRID_API_KEY }, // 'apikey' is literal for SendGrid
+function validate(m) {
+  const missing = [];
+  if (!m.fullName) missing.push("name");
+  if (!m.email) missing.push("email");
+  if (!m.city) missing.push("city/location");
+  if (!m.igHandle && !m.portfolioLink)
+    missing.push("portfolio (IG handle or link)");
+  if (!m.proud) missing.push("q_proud");
+  if (!m.commitment) missing.push("q_commitment");
+  if (!m.agreeSanitation) missing.push("agree_sanitation");
+  return missing;
+}
+
+exports.handler = async (event) => {
+  if (event.httpMethod === "OPTIONS")
+    return { statusCode: 200, headers: corsHeaders, body: "ok" };
+  if (event.httpMethod !== "POST") return bad("Use POST");
+
+  const body = readJson(event);
+  if (body === null) return bad("Invalid JSON");
+
+  const mapped = mapFields(body);
+  const missing = validate(mapped);
+  if (missing.length) {
+    console.error("Artist submit missing:", missing, {
+      gotKeys: Object.keys(body || {}),
+    });
+    return bad(`Missing required field(s): ${missing.join(", ")}`);
+  }
+
+  const toCareers = process.env.ARTIST_RECEIVER || "careers@seventattoolv.com";
+  const fromEmail = process.env.SEND_FROM || "careers@seventattoolv.com";
+  const sendgridKey = process.env.SENDGRID_API_KEY;
+  if (!sendgridKey) return oops("SENDGRID_API_KEY not configured");
+
+  const transporter = nodemailer.createTransport({
+    host: "smtp.sendgrid.net",
+    port: 465,
+    secure: true,
+    auth: { user: "apikey", pass: sendgridKey },
   });
 
-// Safe formatting utils
-const escapeHtml = (s = "") =>
-  String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-const nl2br = (s = "") => escapeHtml(s).replace(/\n/g, "<br>");
-const oneLine = (s = "") => String(s).replace(/\s+/g, " ").trim();
-
-/* ------------------------- email templates ------------------------ */
-const internalEmailHtml = (d) => `
-  <h2>New Artist Application</h2>
-  <p><strong>Full Name:</strong> ${escapeHtml(d.fullName)}</p>
-  <p><strong>Phone:</strong> ${escapeHtml(d.phone)}</p>
-  <p><strong>Email:</strong> ${escapeHtml(d.email)}</p>
-  <p><strong>City/Location:</strong> ${escapeHtml(d.city)}</p>
-  <p><strong>Portfolio Link:</strong> <a href="${escapeHtml(d.portfolio)}">${escapeHtml(d.portfolio)}</a></p>
-  <hr/>
-  <p><strong>What must your work represent in five years for you to feel proud?</strong><br>${nl2br(d.fiveYear)}</p>
-  <p><strong>Tell us about a long-term commitment you kept and why it mattered.</strong><br>${nl2br(d.longCommit)}</p>
-  <p><strong>I agree to follow sanitation & compliance standards:</strong> ${d.compliance ? "Yes" : "No"}</p>
-  ${d.videoLink ? `<p><strong>60s Video (“Why Seven?”):</strong> <a href="${escapeHtml(d.videoLink)}">${escapeHtml(d.videoLink)}</a></p>` : ""}
-  <hr/>
-  <p style="font-size:12px;color:#888">Route: Artist • Source: ${escapeHtml(d.source || "Landing Page")}</p>
-`;
-
-const internalEmailText = (d) =>
-  [
-    "New Artist Application",
-    `Name: ${d.fullName}`,
-    `Phone: ${d.phone}`,
-    `Email: ${d.email}`,
-    `City: ${d.city}`,
-    `Portfolio: ${d.portfolio}`,
-    `5-Year: ${oneLine(d.fiveYear)}`,
-    `Commitment: ${oneLine(d.longCommit)}`,
-    `Compliance: ${d.compliance ? "Yes" : "No"}`,
-    `Video: ${d.videoLink || "—"}`,
-    `Source: ${d.source || "Landing Page"}`,
+  const subject = `New ARTIST application — ${mapped.fullName}`;
+  const text = [
+    `Name: ${mapped.fullName}`,
+    `Email: ${mapped.email}`,
+    `Phone: ${mapped.phone || "(not provided)"}`,
+    `City/Location: ${mapped.city}`,
+    `Instagram: ${mapped.igHandle || "(not provided)"}`,
+    `Portfolio: ${mapped.portfolioLink || "(not provided)"}`,
+    `Video: ${mapped.videoUrl || "(optional/not provided)"}`,
+    "",
+    `Q — Proud (5-year):`,
+    mapped.proud,
+    "",
+    `Q — Long-term commitment:`,
+    mapped.commitment,
+    "",
+    `Agrees to sanitation/compliance: ${mapped.agreeSanitation ? "YES" : "NO"}`,
   ].join("\n");
 
-const applicantEmailHtml = (d) => `
-  <h2>Thanks, ${escapeHtml(d.fullName)} — Artist application received</h2>
-  <p>Hi ${escapeHtml(d.fullName)},</p>
-  <p>Thanks for applying to join <strong>Seven Tattoo</strong> as an <strong>Artist</strong>. We review applications within 48 hours and will reach out if we’re moving forward.</p>
-  <p><strong>We noted your portfolio:</strong> <a href="${escapeHtml(d.portfolio)}">${escapeHtml(d.portfolio)}</a></p>
-  <p>— Seven Tattoo</p>
-`;
-
-const applicantEmailText = (d) =>
-  `Thanks ${d.fullName}! We received your Artist application. We review within 48 hours.\n\n— Seven Tattoo`;
-
-/* ----------------------------- handler ---------------------------- */
-module.exports.handler = async (event) => {
-  // CORS preflight
-  if (event.httpMethod === "OPTIONS") {
-    return { statusCode: 204, headers: corsHeaders };
-  }
-  if (event.httpMethod !== "POST") {
-    return { statusCode: 405, body: "Method Not Allowed" };
-  }
-
   try {
-    const body = parseBody(event.body, event.headers);
-
-    // Honeypot
-    if (body.hp && String(body.hp).trim().length > 0) {
-      return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ ok: false, error: "Blocked" }) };
-    }
-
-    // Accept both your current Shopify names AND the original backend names
-    const aliased = {
-      fullName: body.fullName ?? body.name ?? body.full_name,
-      phone: body.phone,
-      email: body.email,
-      city: body.city ?? body.location,
-      portfolio: body.portfolio ?? body.ig_handle ?? body.portfolio_link,
-      fiveYear: body.fiveYear ?? body.q_proud ?? body.q_five_years,
-      longCommit: body.longCommit ?? body.q_commitment ?? body.commitment,
-      compliance: body.compliance ?? body.agree_sanitation,
-      videoLink: body.videoLink ?? body.video_url,
-      source: body.source ?? body.form_source ?? "",
-    };
-
-    // Validate AFTER aliasing
-    const missing = requiredMissing(aliased, [
-      "fullName", "phone", "email", "city",
-      "portfolio", "fiveYear", "longCommit", "compliance",
-    ]);
-    if (missing.length) {
-      return {
-        statusCode: 422,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-        body: JSON.stringify({ ok: false, error: "Missing fields", missing }),
-      };
-    }
-
-    // Normalize
-    const data = {
-      fullName: String(aliased.fullName).trim(),
-      phone: String(aliased.phone).trim(),
-      email: String(aliased.email).trim(),
-      city: String(aliased.city).trim(),
-      portfolio: String(aliased.portfolio).trim(),
-      fiveYear: String(aliased.fiveYear || "").trim(),
-      longCommit: String(aliased.longCommit || "").trim(),
-      compliance: isTruthy(aliased.compliance),
-      videoLink: String(aliased.videoLink || "").trim(),
-      source: String(aliased.source || "").trim(),
-    };
-
-    const transporter = makeTransport();
-
-    // 1) Internal inbox
     await transporter.sendMail({
-      from: process.env.FROM_EMAIL,
-      to: process.env.INTERNAL_EMAIL,
-      subject: `Artist Application — ${data.fullName}`,
-      html: internalEmailHtml(data),
-      text: internalEmailText(data),
-      replyTo: data.email,
+      from: fromEmail,
+      to: toCareers,
+      subject,
+      text,
     });
-
-    // 2) Confirmation to applicant
-    await transporter.sendMail({
-      from: process.env.FROM_EMAIL,
-      to: data.email,
-      subject: "We received your Artist application — Seven Tattoo",
-      html: applicantEmailHtml(data),
-      text: applicantEmailText(data),
-    });
-
-    return {
-      statusCode: 200,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-      body: JSON.stringify({ ok: true }),
-    };
+    if (mapped.email) {
+      await transporter.sendMail({
+        from: fromEmail,
+        to: mapped.email,
+        subject: "Seven Tattoo — We received your Artist application",
+        text: `Hi ${
+          mapped.fullName || ""
+        },\n\nThanks for applying to Seven Tattoo. We’ve received your submission and will review it shortly.\n— Seven Tattoo`,
+      });
+    }
+    return ok({ ok: true });
   } catch (err) {
-    console.error("submit-artist error:", err);
-    return {
-      statusCode: 500,
-      headers: corsHeaders,
-      body: JSON.stringify({ ok: false, error: "Server error" }),
-    };
+    console.error("Artist submit mail error:", err?.response?.body || err);
+    return oops("Email send failed");
   }
 };
-
