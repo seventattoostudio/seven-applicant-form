@@ -1,9 +1,9 @@
 // netlify/functions/submit-artist.cjs
-// Handles Artist applications: internal email + confirmation to applicant (SendGrid).
+// Handles Artist applications: internal email + confirmation to applicant (SendGrid via Nodemailer)
 
 const nodemailer = require("nodemailer");
 
-// -------------------- helpers --------------------
+/* ---------------------------- helpers ---------------------------- */
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "Content-Type",
@@ -20,7 +20,9 @@ const requiredMissing = (body, fields) =>
 
 const parseBody = (raw, headers = {}) => {
   const ct = (headers["content-type"] || headers["Content-Type"] || "").toLowerCase();
-  if (ct.includes("application/json")) { try { return JSON.parse(raw || "{}"); } catch { return {}; } }
+  if (ct.includes("application/json")) {
+    try { return JSON.parse(raw || "{}"); } catch { return {}; }
+  }
   if (ct.includes("application/x-www-form-urlencoded")) {
     const params = new URLSearchParams(raw || "");
     return Object.fromEntries(params.entries());
@@ -28,14 +30,14 @@ const parseBody = (raw, headers = {}) => {
   try { return JSON.parse(raw || "{}"); } catch { return {}; }
 };
 
-// Use SendGrid via Nodemailer
+// Use SendGrid via Nodemailer. You must set SENDGRID_API_KEY, FROM_EMAIL, INTERNAL_EMAIL in Netlify.
 const makeTransport = () =>
   nodemailer.createTransport({
     service: "SendGrid",
-    auth: { user: "apikey", pass: process.env.SENDGRID_API_KEY },
+    auth: { user: "apikey", pass: process.env.SENDGRID_API_KEY }, // 'apikey' is literal for SendGrid
   });
 
-// small utilities for safety/formatting
+// Safe formatting utils
 const escapeHtml = (s = "") =>
   String(s)
     .replace(/&/g, "&amp;")
@@ -45,7 +47,7 @@ const escapeHtml = (s = "") =>
 const nl2br = (s = "") => escapeHtml(s).replace(/\n/g, "<br>");
 const oneLine = (s = "") => String(s).replace(/\s+/g, " ").trim();
 
-// -------------------- email templates --------------------
+/* ------------------------- email templates ------------------------ */
 const internalEmailHtml = (d) => `
   <h2>New Artist Application</h2>
   <p><strong>Full Name:</strong> ${escapeHtml(d.fullName)}</p>
@@ -88,8 +90,9 @@ const applicantEmailHtml = (d) => `
 const applicantEmailText = (d) =>
   `Thanks ${d.fullName}! We received your Artist application. We review within 48 hours.\n\n— Seven Tattoo`;
 
-// -------------------- handler --------------------
+/* ----------------------------- handler ---------------------------- */
 module.exports.handler = async (event) => {
+  // CORS preflight
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 204, headers: corsHeaders };
   }
@@ -102,32 +105,48 @@ module.exports.handler = async (event) => {
 
     // Honeypot
     if (body.hp && String(body.hp).trim().length > 0) {
-      return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ ok:false, error:"Blocked" }) };
+      return { statusCode: 400, headers: corsHeaders, body: JSON.stringify({ ok: false, error: "Blocked" }) };
     }
 
-    const missing = requiredMissing(body, [
-      "fullName","phone","email","city",
-      "portfolio","fiveYear","longCommit","compliance"
+    // Accept both your current Shopify names AND the original backend names
+    const aliased = {
+      fullName: body.fullName ?? body.name ?? body.full_name,
+      phone: body.phone,
+      email: body.email,
+      city: body.city ?? body.location,
+      portfolio: body.portfolio ?? body.ig_handle ?? body.portfolio_link,
+      fiveYear: body.fiveYear ?? body.q_proud ?? body.q_five_years,
+      longCommit: body.longCommit ?? body.q_commitment ?? body.commitment,
+      compliance: body.compliance ?? body.agree_sanitation,
+      videoLink: body.videoLink ?? body.video_url,
+      source: body.source ?? body.form_source ?? "",
+    };
+
+    // Validate AFTER aliasing
+    const missing = requiredMissing(aliased, [
+      "fullName", "phone", "email", "city",
+      "portfolio", "fiveYear", "longCommit", "compliance",
     ]);
     if (missing.length) {
       return {
         statusCode: 422,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
-        body: JSON.stringify({ ok:false, error:"Missing fields", missing }),
+        body: JSON.stringify({ ok: false, error: "Missing fields", missing }),
       };
     }
 
+    // Normalize
     const data = {
-      fullName: String(body.fullName).trim(),
-      phone: String(body.phone).trim(),
-      email: String(body.email).trim(),
-      city: String(body.city).trim(),
-      portfolio: String(body.portfolio).trim(),
-      fiveYear: String(body.fiveYear || "").trim(),
-      longCommit: String(body.longCommit || "").trim(),
-      compliance: isTruthy(body.compliance),
-      videoLink: String(body.videoLink || "").trim(),
-      source: String(body.source || "").trim(),
+      fullName: String(aliased.fullName).trim(),
+      phone: String(aliased.phone).trim(),
+      email: String(aliased.email).trim(),
+      city: String(aliased.city).trim(),
+      portfolio: String(aliased.portfolio).trim(),
+      fiveYear: String(aliased.fiveYear || "").trim(),
+      longCommit: String(aliased.longCommit || "").trim(),
+      compliance: isTruthy(aliased.compliance),
+      videoLink: String(aliased.videoLink || "").trim(),
+      source: String(aliased.source || "").trim(),
     };
 
     const transporter = makeTransport();
@@ -154,11 +173,15 @@ module.exports.handler = async (event) => {
     return {
       statusCode: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
-      body: JSON.stringify({ ok:true }),
+      body: JSON.stringify({ ok: true }),
     };
   } catch (err) {
     console.error("submit-artist error:", err);
-    return { statusCode: 500, headers: corsHeaders, body: JSON.stringify({ ok:false, error:"Server error" }) };
+    return {
+      statusCode: 500,
+      headers: corsHeaders,
+      body: JSON.stringify({ ok: false, error: "Server error" }),
+    };
   }
 };
 
