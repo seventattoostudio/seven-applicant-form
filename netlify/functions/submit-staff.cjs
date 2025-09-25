@@ -160,8 +160,6 @@ module.exports.handler = async (event) => {
     `Phone: ${m.phone || "(not provided)"}`,
     `City/Location: ${m.city || "(not provided)"}`,
     `Position/Role: ${m.position || "(not provided)"}`,
-    `Availability: ${m.availability || "(not provided)"}`,
-    `Portfolio: ${m.portfolio || "(not provided)"}`,
     `Resume/Video: ${m.resumeLink || "(not provided)"}`,
     "",
     `About (What do you need from a workplace to feel secure and grow?):`,
