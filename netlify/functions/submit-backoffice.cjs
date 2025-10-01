@@ -1,7 +1,7 @@
 // netlify/functions/submit-backoffice.cjs
 const nodemailer = require("nodemailer");
 
-/* CORS */
+/* ---------- CORS ---------- */
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
 const cors = {
   "Access-Control-Allow-Origin": CORS_ORIGIN,
@@ -20,7 +20,7 @@ const oops = (m) => ({
   body: JSON.stringify({ ok: false, message: m }),
 });
 
-/* Body parsing */
+/* ---------- Body parsing ---------- */
 function parseBody(event) {
   try {
     const raw = event.isBase64Encoded
@@ -29,6 +29,7 @@ function parseBody(event) {
     const ct = String(
       event.headers?.["content-type"] || event.headers?.["Content-Type"] || ""
     ).toLowerCase();
+
     if (ct.includes("application/json")) return JSON.parse(raw || "{}");
     if (ct.includes("application/x-www-form-urlencoded")) {
       const p = new URLSearchParams(raw);
@@ -36,6 +37,7 @@ function parseBody(event) {
       for (const [k, v] of p.entries()) o[k] = v;
       return o;
     }
+    // try json by default
     try {
       return JSON.parse(raw || "{}");
     } catch {
@@ -47,7 +49,7 @@ function parseBody(event) {
 }
 const v = (x) => (typeof x === "string" ? x.trim() : x);
 
-/* tolerant getters */
+/* ---------- tolerant getters ---------- */
 function getFirstCI(obj, keys) {
   const map = new Map(Object.keys(obj || {}).map((k) => [k.toLowerCase(), k]));
   for (const k of keys) {
@@ -59,14 +61,15 @@ function getFirstCI(obj, keys) {
 }
 function getByRegex(obj, regexes) {
   for (const [k, val] of Object.entries(obj || {})) {
+    if (val == null) continue;
     for (const rx of regexes) {
-      if (rx.test(k) && val != null && String(val).trim() !== "") return v(val);
+      if (rx.test(k) && String(val).trim() !== "") return v(val);
     }
   }
   return "";
 }
 
-/* map base fields */
+/* ---------- base mapping ---------- */
 function mapBase(input) {
   const o = input || {};
   const fullName = getFirstCI(o, [
@@ -130,10 +133,10 @@ function mapBase(input) {
   };
 }
 
-/* bulletproof ownership story extractor */
+/* ---------- ownership story extractor (bulletproof) ---------- */
 function getOwnership(raw) {
   const o = raw || {};
-  const candidateKeys = [
+  const candidates = [
     "ownershipStory",
     "ownership_story",
     "ownershipstory",
@@ -146,13 +149,16 @@ function getOwnership(raw) {
     "something_went_wrong",
     "what_went_wrong",
     "went_wrong",
+    "documented",
+    "maintained_order",
+    "made_work_easier",
   ];
-  // 1) exact keys
-  let keyUsed = candidateKeys.find(
-    (k) => o[k] != null && String(o[k]).trim() !== ""
-  );
-  if (keyUsed) return { value: v(o[keyUsed]), keyUsed };
 
+  // 1) exact names first
+  for (const k of candidates) {
+    if (o[k] != null && String(o[k]).trim() !== "")
+      return { value: v(o[k]), keyUsed: k };
+  }
   // 2) regex on keys
   for (const [k, val] of Object.entries(o)) {
     if (!val) continue;
@@ -162,12 +168,11 @@ function getOwnership(raw) {
         k
       )
     ) {
-      const trimmed = String(val).trim();
-      if (trimmed) return { value: trimmed, keyUsed: k };
+      const t = String(val).trim();
+      if (t) return { value: t, keyUsed: k };
     }
   }
-
-  // 3) longest textarea-ish answer excluding obvious fields
+  // 3) fallback: longest textarea-like answer (excluding obvious fields)
   const ignore = new Set(
     [
       "fullName",
@@ -222,10 +227,10 @@ function getOwnership(raw) {
     }
   }
   if (best.v) return { value: best.v, keyUsed: best.k };
-
   return { value: "", keyUsed: "" };
 }
 
+/* ---------- validation ---------- */
 function validate(m, ownershipVal) {
   const miss = [];
   if (!m.fullName) miss.push("Full Name");
@@ -238,6 +243,7 @@ function validate(m, ownershipVal) {
   return miss;
 }
 
+/* ---------- email helpers ---------- */
 function esc(s = "") {
   return String(s)
     .replace(/&/g, "&amp;")
@@ -254,6 +260,7 @@ function row(label, val) {
   }</td></tr>`;
 }
 
+/* ---------- handler ---------- */
 module.exports.handler = async (event) => {
   if (event.httpMethod === "OPTIONS")
     return { statusCode: 200, headers: cors, body: "ok" };
@@ -285,6 +292,7 @@ module.exports.handler = async (event) => {
       : process.env.BACKOFFICE_RECEIVER ||
         process.env.INTERNAL_EMAIL ||
         "careers@seventattoolv.com";
+
   const fromEmail =
     process.env.SEND_FROM ||
     process.env.FROM_EMAIL ||
@@ -299,7 +307,7 @@ module.exports.handler = async (event) => {
 
   const subject = `New BACK OFFICE application — ${m.fullName}`;
 
-  // build emails (use ownershipVal everywhere)
+  // include all raw pairs for debugging
   const IGNORE_KEYS = new Set(["hp_extra_info"]);
   const allPairs = Object.keys(m.raw || {})
     .filter((k) => !IGNORE_KEYS.has(k))
@@ -395,7 +403,6 @@ If we move forward, we'll reach out via this email.
 
 — Seven Tattoo`,
     });
-
     return ok({ ok: true });
   } catch (err) {
     console.error("BackOffice mail error:", err?.response?.body || err);
