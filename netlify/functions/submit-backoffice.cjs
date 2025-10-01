@@ -1,7 +1,7 @@
 // netlify/functions/submit-backoffice.cjs
 const nodemailer = require("nodemailer");
 
-/* ===================== CORS ===================== */
+/* ============ CORS ============ */
 const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
 const cors = {
   "Access-Control-Allow-Origin": CORS_ORIGIN,
@@ -20,13 +20,12 @@ const oops = (m) => ({
   body: JSON.stringify({ ok: false, message: m }),
 });
 
-/* ===================== Body Parsing ===================== */
+/* ============ Body Parsing ============ */
 function parseBody(event) {
   try {
     const raw = event.isBase64Encoded
       ? Buffer.from(event.body || "", "base64").toString("utf8")
       : event.body || "";
-
     const hdrs = event.headers || {};
     const ct = String(
       hdrs["content-type"] || hdrs["Content-Type"] || ""
@@ -48,45 +47,100 @@ function parseBody(event) {
     return null;
   }
 }
+
 const v = (x) => (typeof x === "string" ? x.trim() : x);
 
-/* ===================== Field Mapping ===================== */
-/** Accept legacy names + new AJAX keys so the email mirrors everything */
+/* ============ Helpers for tolerant mapping ============ */
+function getFirst(obj, keys) {
+  for (const k of keys)
+    if (obj[k] != null && String(obj[k]).trim() !== "") return v(obj[k]);
+  return "";
+}
+function getFirstCI(obj, keys) {
+  // case-insensitive key match
+  const map = new Map(Object.keys(obj || {}).map((k) => [k.toLowerCase(), k]));
+  for (const cand of keys) {
+    const real = map.get(cand.toLowerCase());
+    if (real && obj[real] != null && String(obj[real]).trim() !== "")
+      return v(obj[real]);
+  }
+  return "";
+}
+function getByRegex(obj, regexArr) {
+  const entries = Object.entries(obj || {});
+  for (const [k, val] of entries) {
+    for (const rx of regexArr) {
+      if (rx.test(k) && val != null && String(val).trim() !== "") return v(val);
+    }
+  }
+  return "";
+}
+
+/* ============ Field Mapping (accepts legacy + new + fuzzy) ============ */
 function mapFields(input) {
-  const fullName =
-    v(input.fullName) || v(input.name) || v(input.applicant_name);
-  const email = v(input.email);
-  const phone = v(input.phone) || v(input.tel);
-  const city = v(input.city) || v(input.location);
+  const obj = input || {};
 
-  // Q/A: support both old and new keys
-  const q1 = v(input.about) || v(input.answer1);
-  const q2 = v(input.ownershipStory) || v(input.answer2);
+  const fullName = getFirstCI(obj, [
+    "fullName",
+    "name",
+    "applicant_name",
+    "full_name",
+  ]);
+  const email = getFirstCI(obj, ["email", "applicant_email"]);
+  const phone = getFirstCI(obj, ["phone", "tel", "phone_number"]);
+  const city = getFirstCI(obj, ["city", "location", "city_location"]);
 
-  // Link field: support both old and new keys
-  const resumeLink =
-    v(input.resume_link) ||
-    v(input.resumeUrl) ||
-    v(input.video_url) ||
-    v(input.cv_link);
+  // Q1
+  const q1 =
+    getFirstCI(obj, [
+      "about",
+      "answer1",
+      "q1",
+      "why_fit",
+      "what_you_need",
+      "what_do_you_need",
+    ]) ||
+    getByRegex(obj, [/about/i, /(organized|secure|grow|need).*workplace/i]);
 
-  // Consent: normalize many variants to boolean
+  // Q2
+  const q2 =
+    getFirstCI(obj, [
+      "ownershipStory",
+      "ownership_story",
+      "answer2",
+      "q2",
+      "story",
+      "when_something_went_wrong",
+    ]) ||
+    getByRegex(obj, [
+      /owner(ship)?[_ ]?story/i,
+      /(document(ed)?|order|went[_ ]?wrong|made work easier)/i,
+    ]);
+
+  // Resume / Video URL
+  const resumeLink = getFirstCI(obj, [
+    "resumeUrl",
+    "resume_link",
+    "video_url",
+    "cv_link",
+    "portfolio",
+    "portfolio_url",
+    "link",
+    "url",
+  ]);
+
+  // Consent → boolean
   const consentRaw =
-    input.consentProcedures ??
-    input.consent ??
-    input.agree ??
-    input.agree_sanitation;
+    obj.consentProcedures ?? obj.consent ?? obj.agree ?? obj.agree_sanitation;
   const consent = ["true", "on", "yes", "1", "y"].includes(
     String(consentRaw).toLowerCase()
   );
 
-  const role = v(input.role) || "Back Office (Staff)";
-  const source = v(input.source);
-  const notifyEmail = v(input.recipient) || v(input.notify_email);
-
-  // extra meta if provided by frontend
-  const userAgent = v(input.userAgent);
-  const page = v(input.page);
+  const role = getFirstCI(obj, ["role"]) || "Back Office (Staff)";
+  const source = getFirstCI(obj, ["source"]);
+  const notifyEmail = getFirstCI(obj, ["recipient", "notify_email"]);
+  const userAgent = getFirstCI(obj, ["userAgent", "user_agent"]);
+  const page = getFirstCI(obj, ["page"]);
 
   return {
     fullName,
@@ -102,23 +156,22 @@ function mapFields(input) {
     notifyEmail,
     userAgent,
     page,
-    raw: input,
+    raw: obj,
   };
 }
 
 function validate(m) {
-  const missing = [];
-  if (!m.fullName) missing.push("Full Name");
-  if (!m.email) missing.push("Email");
-  if (!m.phone) missing.push("Phone");
-  if (!m.city) missing.push("City/Location");
-  if (!m.q1) missing.push("Q1 (organization)");
-  if (!m.q2) missing.push("Q2 (documented order)");
-  if (!m.resumeLink) missing.push("Resume/Video link");
-  return missing;
+  const miss = [];
+  if (!m.fullName) miss.push("Full Name");
+  if (!m.email) miss.push("Email");
+  if (!m.phone) miss.push("Phone");
+  if (!m.city) miss.push("City/Location");
+  if (!m.q1) miss.push("Q1 (organization)");
+  if (!m.q2) miss.push("Q2 (documented order)");
+  if (!m.resumeLink) miss.push("Resume/Video link");
+  return miss;
 }
 
-/* ===================== Email Helpers ===================== */
 function esc(s = "") {
   return String(s)
     .replace(/&/g, "&amp;")
@@ -128,15 +181,13 @@ function esc(s = "") {
     .replace(/'/g, "&#39;");
 }
 function row(label, val) {
-  if (val === undefined || val === null || String(val) === "") return "";
   return `<tr><td style="padding:6px 10px;border-top:1px solid #eee;"><strong>${esc(
     label
-  )}:</strong></td><td style="padding:6px 10px;border-top:1px solid #eee;">${esc(
-    val
-  )}</td></tr>`;
+  )}:</strong></td><td style="padding:6px 10px;border-top:1px solid #eee;">${
+    val ? esc(val) : "<em>(not provided)</em>"
+  }</td></tr>`;
 }
 
-/* ===================== Handler ===================== */
 module.exports.handler = async (event) => {
   if (event.httpMethod === "OPTIONS")
     return { statusCode: 200, headers: cors, body: "ok" };
@@ -172,7 +223,6 @@ module.exports.handler = async (event) => {
     process.env.FROM_EMAIL ||
     "careers@seventattoolv.com";
 
-  // SendGrid SMTP (your original: secure: true, 465)
   const transport = nodemailer.createTransport({
     host: "smtp.sendgrid.net",
     port: 465,
@@ -182,7 +232,7 @@ module.exports.handler = async (event) => {
 
   const subject = `New BACK OFFICE application — ${m.fullName}`;
 
-  // Primary labeled section (human-friendly)
+  // Text (human-friendly + raw dump)
   const textLines = [
     `ROLE: ${m.role}`,
     `Source: ${m.source || "-"}`,
@@ -204,33 +254,31 @@ module.exports.handler = async (event) => {
     m.userAgent ? `User Agent: ${m.userAgent}` : null,
   ].filter(Boolean);
 
-  // “All submitted fields” dump: mirror everything provided
   const IGNORE_KEYS = new Set(["hp_extra_info"]);
   const allPairs = Object.keys(m.raw || {})
     .filter((k) => !IGNORE_KEYS.has(k))
     .map((k) => `${k}: ${String(m.raw[k])}`);
 
-  const textAll = [
-    ``,
-    `— — — — —`,
-    `All submitted fields (raw)`,
-    `— — — — —`,
+  const text = [
+    ...textLines,
+    "",
+    "— — — — —",
+    "All submitted fields (raw)",
+    "— — — — —",
     ...allPairs,
-  ];
-
-  const text = [...textLines, ...textAll].join("\n");
+  ].join("\n");
 
   const html = `
-    <div style="font-family:system-ui,-apple-system,'SF Pro Text','Helvetica Neue',Arial,sans-serif; color:#111;">
+    <div style="font-family:system-ui,-apple-system,'SF Pro Text','Helvetica Neue',Arial,sans-serif;color:#111;">
       <h2 style="margin:0 0 10px;">Back Office Application</h2>
       <p style="margin:0 0 14px;opacity:.85;">
         ${
           m.page
             ? `Submitted via <strong>${esc(m.page)}</strong>`
             : `Submission received`
-        } ${m.source ? ` • Source: <strong>${esc(m.source)}</strong>` : ``}
+        }
+        ${m.source ? ` • Source: <strong>${esc(m.source)}</strong>` : ``}
       </p>
-
       <table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;max-width:760px;">
         ${row("ROLE", m.role)}
         ${row("Full Name", m.fullName)}
@@ -254,14 +302,14 @@ module.exports.handler = async (event) => {
       </table>
 
       <h3 style="margin:22px 0 8px;">All submitted fields (raw)</h3>
-      <pre style="white-space:pre-wrap;background:#f7f7f7;border:1px solid #eee;border-radius:8px;padding:10px;margin:0;">
-${esc(allPairs.join("\n"))}
-      </pre>
+      <pre style="white-space:pre-wrap;background:#f7f7f7;border:1px solid #eee;border-radius:8px;padding:10px;margin:0;">${esc(
+        allPairs.join("\n")
+      )}</pre>
     </div>
   `;
 
   try {
-    // Internal notification
+    // Internal
     await transport.sendMail({
       from: fromEmail,
       to: toCareers,
@@ -270,7 +318,7 @@ ${esc(allPairs.join("\n"))}
       html,
     });
 
-    // Applicant confirmation (short + echo key answers)
+    // Applicant confirmation
     await transport.sendMail({
       from: fromEmail,
       to: m.email,

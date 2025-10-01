@@ -1,30 +1,28 @@
 // netlify/functions/submit-artist.cjs
 const nodemailer = require("nodemailer");
 
-const CORS_ORIGIN = process.env.CORS_ORIGIN || "*"; // set your domain later
+const CORS_ORIGIN = process.env.CORS_ORIGIN || "*";
 const corsHeaders = {
   "Access-Control-Allow-Origin": CORS_ORIGIN,
   "Access-Control-Allow-Methods": "POST,OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
-function ok(body) {
-  return { statusCode: 200, headers: corsHeaders, body: JSON.stringify(body) };
-}
-function bad(msg) {
-  return {
-    statusCode: 400,
-    headers: corsHeaders,
-    body: JSON.stringify({ ok: false, error: msg }),
-  };
-}
-function oops(msg) {
-  return {
-    statusCode: 500,
-    headers: corsHeaders,
-    body: JSON.stringify({ ok: false, error: msg }),
-  };
-}
+const ok = (b) => ({
+  statusCode: 200,
+  headers: corsHeaders,
+  body: JSON.stringify(b),
+});
+const bad = (m) => ({
+  statusCode: 400,
+  headers: corsHeaders,
+  body: JSON.stringify({ ok: false, error: m }),
+});
+const oops = (m) => ({
+  statusCode: 500,
+  headers: corsHeaders,
+  body: JSON.stringify({ ok: false, error: m }),
+});
 
 function readJson(event) {
   try {
@@ -38,7 +36,7 @@ function readJson(event) {
   }
 }
 
-// alias Shopify → internal names
+// Shopify → internal aliases
 function mapFields(input) {
   const v = (x) => (typeof x === "string" ? x.trim() : x);
 
@@ -103,11 +101,11 @@ function validate(m) {
   if (!m.fullName) missing.push("name");
   if (!m.email) missing.push("email");
   if (!m.city) missing.push("city/location");
-  if (!m.igHandle && !m.portfolioLink)
-    missing.push("portfolio (IG handle or link)");
+  if (!m.igHandle) missing.push("ig_handle"); // your UI requires handle (not a link)
   if (!m.proud) missing.push("q_proud");
   if (!m.commitment) missing.push("q_commitment");
   if (!m.agreeSanitation) missing.push("agree_sanitation");
+  if (!m.videoUrl) missing.push("video_url");
   return missing;
 }
 
@@ -146,9 +144,8 @@ exports.handler = async (event) => {
     `Email: ${mapped.email}`,
     `Phone: ${mapped.phone || "(not provided)"}`,
     `City/Location: ${mapped.city}`,
-    `Instagram: ${mapped.igHandle || "(not provided)"}`,
-    `Portfolio: ${mapped.portfolioLink || "(not provided)"}`,
-    `Video: ${mapped.videoUrl || "(optional/not provided)"}`,
+    `Instagram: ${mapped.igHandle}`,
+    `Video: ${mapped.videoUrl}`,
     "",
     `Q — Proud (5-year):`,
     mapped.proud,
@@ -166,16 +163,14 @@ exports.handler = async (event) => {
       subject,
       text,
     });
-    if (mapped.email) {
-      await transporter.sendMail({
-        from: fromEmail,
-        to: mapped.email,
-        subject: "Seven Tattoo — We received your Artist application",
-        text: `Hi ${
-          mapped.fullName || ""
-        },\n\nThanks for applying to Seven Tattoo. We’ve received your submission and will review it shortly.\n— Seven Tattoo`,
-      });
-    }
+    await transporter.sendMail({
+      from: fromEmail,
+      to: mapped.email,
+      subject: "Seven Tattoo — We received your Artist application",
+      text: `Hi ${
+        mapped.fullName || ""
+      },\n\nThanks for applying to Seven Tattoo. We’ve received your submission and will review it shortly.\n— Seven Tattoo`,
+    });
     return ok({ ok: true });
   } catch (err) {
     console.error("Artist submit mail error:", err?.response?.body || err);
