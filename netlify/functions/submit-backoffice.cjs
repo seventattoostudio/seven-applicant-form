@@ -49,7 +49,7 @@ function parseBody(event) {
 }
 const v = (x) => (typeof x === "string" ? x.trim() : x);
 
-/* ============ Tolerant mapping helpers ============ */
+/* ============ Helpers ============ */
 function getFirstCI(obj, keys) {
   const map = new Map(Object.keys(obj || {}).map((k) => [k.toLowerCase(), k]));
   for (const cand of keys) {
@@ -68,7 +68,7 @@ function getByRegex(obj, regexArr) {
   return "";
 }
 
-/* ============ Field Mapping (extra-robust) ============ */
+/* ============ Field Mapping (robust) ============ */
 function mapFields(input) {
   const o = input || {};
 
@@ -82,7 +82,7 @@ function mapFields(input) {
   const phone = getFirstCI(o, ["phone", "tel", "phone_number"]);
   const city = getFirstCI(o, ["city", "location", "city_location"]);
 
-  // Q1: "How do you stay organized…"
+  // Q1
   const q1 =
     getFirstCI(o, [
       "about",
@@ -94,24 +94,93 @@ function mapFields(input) {
     ]) ||
     getByRegex(o, [/about/i, /(organized|secure|grow|need).*work(place)?/i]);
 
-  // Q2: ownership story / went wrong — catch everything
+  // Q2 primary candidates
   const q2Candidates = [
     "ownershipStory",
     "ownership_story",
     "ownership",
+    "ownershipstory",
+    "ownership-story",
     "answer2",
     "q2",
     "story",
     "when_something_went_wrong",
     "went_wrong",
     "what_went_wrong",
+    "something_went_wrong",
   ];
-  const q2 =
+  let q2 =
     getFirstCI(o, q2Candidates) ||
     getByRegex(o, [
-      /owner(ship)?[_ ]?story/i,
-      /(document|maintain(ed)?|order|went[_ ]?wrong|made[_ ]?work[_ ]?easier)/i,
+      /owner(ship)?[_ -]?story/i,
+      /(document|maintain(ed)?|order|went[_ -]?wrong|made[_ -]?work[_ -]?easier)/i,
     ]);
+
+  // Super-fallback: choose the LONGEST plausible textarea-ish answer that isn’t about/contact/link/consent
+  if (!q2) {
+    const ignoreKeys = new Set(
+      [
+        "fullName",
+        "fullname",
+        "name",
+        "applicant_name",
+        "full_name",
+        "email",
+        "applicant_email",
+        "phone",
+        "tel",
+        "phone_number",
+        "city",
+        "location",
+        "city_location",
+        "about",
+        "answer1",
+        "q1",
+        "what_you_need",
+        "what_do_you_need",
+        "why_fit",
+        "resumeUrl",
+        "resume_link",
+        "video_url",
+        "cv_link",
+        "portfolio",
+        "portfolio_url",
+        "link",
+        "url",
+        "consent",
+        "consentProcedures",
+        "agree",
+        "agree_sanitation",
+        "role",
+        "source",
+        "recipient",
+        "notify_email",
+        "userAgent",
+        "user_agent",
+        "page",
+        "hp_extra_info",
+      ].map((s) => s.toLowerCase())
+    );
+
+    let best = { key: "", val: "" };
+    for (const [k, val] of Object.entries(o)) {
+      if (!val || typeof val !== "string") continue;
+      if (ignoreKeys.has(k.toLowerCase())) continue;
+      const trimmed = val.trim();
+      // heuristic: treat as textarea if it has a space or > 40 chars
+      if (
+        trimmed.length >= 1 &&
+        (trimmed.includes(" ") || trimmed.length > 40)
+      ) {
+        if (trimmed.length > best.val.length) best = { key: k, val: trimmed };
+      }
+    }
+    if (best.val) {
+      q2 = best.val;
+      // expose which key we used (for debugging in the email)
+      o.__ownership_fallback_key = best.key;
+    }
+  }
 
   const resumeLink = getFirstCI(o, [
     "resumeUrl",
@@ -143,7 +212,6 @@ function mapFields(input) {
     city,
     q1,
     q2,
-    q2Candidates,
     resumeLink,
     consent,
     role,
@@ -161,12 +229,8 @@ function validate(m) {
   if (!m.email) miss.push("Email");
   if (!m.phone) miss.push("Phone");
   if (!m.city) miss.push("City/Location");
-  // Consider Q1/Q2 required if NEITHER mapped nor any candidate is present
   if (!m.q1) miss.push("Q1 (organization)");
-  const hasQ2 =
-    !!m.q2 ||
-    m.q2Candidates.some((k) => m.raw[k] && String(m.raw[k]).trim() !== "");
-  if (!hasQ2) miss.push("Q2 (ownership story)");
+  if (!m.q2) miss.push("Q2 (ownership story)");
   if (!m.resumeLink) miss.push("Resume/Video link");
   return miss;
 }
@@ -232,14 +296,6 @@ module.exports.handler = async (event) => {
 
   const subject = `New BACK OFFICE application — ${m.fullName}`;
 
-  // Ownership story value with hard fallback to raw keys so it never shows empty if present
-  const ownershipVal =
-    m.q2 ||
-    m.q2Candidates
-      .map((k) => m.raw[k])
-      .find((vv) => vv && String(vv).trim() !== "") ||
-    "";
-
   const textLines = [
     `ROLE: ${m.role}`,
     `Source: ${m.source || "-"}`,
@@ -250,14 +306,17 @@ module.exports.handler = async (event) => {
     `Phone: ${m.phone}`,
     `City / Location: ${m.city}`,
     ``,
-    `How do you stay organized when managing multiple responsibilities?`,
+    `About (What do you need from a workplace to feel secure and grow?):`,
     `${m.q1}`,
     ``,
     `Ownership story (when something went wrong):`,
-    `${ownershipVal || "(not provided)"}`,
+    `${m.q2 || "(not provided)"}`,
+    m.raw.__ownership_fallback_key
+      ? `\n[ownership key used: ${m.raw.__ownership_fallback_key}]`
+      : null,
     ``,
     `Resume / Portfolio / Video URL: ${m.resumeLink}`,
-    `Consent to procedures & daily records: ${m.consent ? "YES" : "NO"}`,
+    `Agrees to policies: ${m.consent ? "YES" : "NO"}`,
     m.userAgent ? `User Agent: ${m.userAgent}` : null,
   ].filter(Boolean);
 
@@ -296,12 +355,14 @@ module.exports.handler = async (event) => {
           "About (What do you need from a workplace to feel secure and grow?)",
           m.q1
         )}
-        ${row("Ownership story (when something went wrong)", ownershipVal)}
+        ${row("Ownership story (when something went wrong)", m.q2)}
+        ${
+          m.raw.__ownership_fallback_key
+            ? row("[ownership key used]", m.raw.__ownership_fallback_key)
+            : ""
+        }
         ${row("Resume / Portfolio / Video URL", m.resumeLink)}
-        ${row(
-          "Consent to procedures & daily records",
-          m.consent ? "Yes" : "No"
-        )}
+        ${row("Agrees to policies", m.consent ? "YES" : "NO")}
         ${row("User Agent", m.userAgent || "")}
       </table>
 
@@ -313,6 +374,7 @@ module.exports.handler = async (event) => {
   `;
 
   try {
+    // Internal notification
     await transport.sendMail({
       from: fromEmail,
       to: toCareers,
@@ -321,6 +383,7 @@ module.exports.handler = async (event) => {
       html,
     });
 
+    // Applicant confirmation
     await transport.sendMail({
       from: fromEmail,
       to: m.email,
