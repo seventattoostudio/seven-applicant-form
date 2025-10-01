@@ -47,28 +47,20 @@ function parseBody(event) {
     return null;
   }
 }
-
 const v = (x) => (typeof x === "string" ? x.trim() : x);
 
-/* ============ Helpers for tolerant mapping ============ */
-function getFirst(obj, keys) {
-  for (const k of keys)
-    if (obj[k] != null && String(obj[k]).trim() !== "") return v(obj[k]);
-  return "";
-}
+/* ============ Tolerant mapping helpers ============ */
 function getFirstCI(obj, keys) {
-  // case-insensitive key match
   const map = new Map(Object.keys(obj || {}).map((k) => [k.toLowerCase(), k]));
   for (const cand of keys) {
-    const real = map.get(cand.toLowerCase());
+    const real = map.get(String(cand).toLowerCase());
     if (real && obj[real] != null && String(obj[real]).trim() !== "")
       return v(obj[real]);
   }
   return "";
 }
 function getByRegex(obj, regexArr) {
-  const entries = Object.entries(obj || {});
-  for (const [k, val] of entries) {
+  for (const [k, val] of Object.entries(obj || {})) {
     for (const rx of regexArr) {
       if (rx.test(k) && val != null && String(val).trim() !== "") return v(val);
     }
@@ -76,23 +68,23 @@ function getByRegex(obj, regexArr) {
   return "";
 }
 
-/* ============ Field Mapping (accepts legacy + new + fuzzy) ============ */
+/* ============ Field Mapping (extra-robust) ============ */
 function mapFields(input) {
-  const obj = input || {};
+  const o = input || {};
 
-  const fullName = getFirstCI(obj, [
+  const fullName = getFirstCI(o, [
     "fullName",
     "name",
     "applicant_name",
     "full_name",
   ]);
-  const email = getFirstCI(obj, ["email", "applicant_email"]);
-  const phone = getFirstCI(obj, ["phone", "tel", "phone_number"]);
-  const city = getFirstCI(obj, ["city", "location", "city_location"]);
+  const email = getFirstCI(o, ["email", "applicant_email"]);
+  const phone = getFirstCI(o, ["phone", "tel", "phone_number"]);
+  const city = getFirstCI(o, ["city", "location", "city_location"]);
 
-  // Q1
+  // Q1: "How do you stay organized…"
   const q1 =
-    getFirstCI(obj, [
+    getFirstCI(o, [
       "about",
       "answer1",
       "q1",
@@ -100,25 +92,27 @@ function mapFields(input) {
       "what_you_need",
       "what_do_you_need",
     ]) ||
-    getByRegex(obj, [/about/i, /(organized|secure|grow|need).*workplace/i]);
+    getByRegex(o, [/about/i, /(organized|secure|grow|need).*work(place)?/i]);
 
-  // Q2
+  // Q2: ownership story / went wrong — catch everything
   const q2 =
-    getFirstCI(obj, [
+    getFirstCI(o, [
       "ownershipStory",
       "ownership_story",
       "answer2",
       "q2",
+      "ownership",
       "story",
       "when_something_went_wrong",
+      "went_wrong",
+      "what_went_wrong",
     ]) ||
-    getByRegex(obj, [
+    getByRegex(o, [
       /owner(ship)?[_ ]?story/i,
-      /(document(ed)?|order|went[_ ]?wrong|made work easier)/i,
+      /(document|maintain(ed)?|order|went[_ ]?wrong|made[_ ]?work[_ ]?easier)/i,
     ]);
 
-  // Resume / Video URL
-  const resumeLink = getFirstCI(obj, [
+  const resumeLink = getFirstCI(o, [
     "resumeUrl",
     "resume_link",
     "video_url",
@@ -129,18 +123,17 @@ function mapFields(input) {
     "url",
   ]);
 
-  // Consent → boolean
   const consentRaw =
-    obj.consentProcedures ?? obj.consent ?? obj.agree ?? obj.agree_sanitation;
+    o.consentProcedures ?? o.consent ?? o.agree ?? o.agree_sanitation;
   const consent = ["true", "on", "yes", "1", "y"].includes(
     String(consentRaw).toLowerCase()
   );
 
-  const role = getFirstCI(obj, ["role"]) || "Back Office (Staff)";
-  const source = getFirstCI(obj, ["source"]);
-  const notifyEmail = getFirstCI(obj, ["recipient", "notify_email"]);
-  const userAgent = getFirstCI(obj, ["userAgent", "user_agent"]);
-  const page = getFirstCI(obj, ["page"]);
+  const role = getFirstCI(o, ["role"]) || "Back Office (Staff)";
+  const source = getFirstCI(o, ["source"]);
+  const notifyEmail = getFirstCI(o, ["recipient", "notify_email"]);
+  const userAgent = getFirstCI(o, ["userAgent", "user_agent"]);
+  const page = getFirstCI(o, ["page"]);
 
   return {
     fullName,
@@ -156,7 +149,7 @@ function mapFields(input) {
     notifyEmail,
     userAgent,
     page,
-    raw: obj,
+    raw: o,
   };
 }
 
@@ -188,6 +181,7 @@ function row(label, val) {
   }</td></tr>`;
 }
 
+/* ============ Handler ============ */
 module.exports.handler = async (event) => {
   if (event.httpMethod === "OPTIONS")
     return { statusCode: 200, headers: cors, body: "ok" };
@@ -196,7 +190,7 @@ module.exports.handler = async (event) => {
   const body = parseBody(event);
   if (body === null) return bad("Invalid body");
 
-  // honeypot
+  // Honeypot
   if (v(body.hp_extra_info)) return ok({ ok: true, skipped: true });
 
   const m = mapFields(body);
@@ -232,7 +226,6 @@ module.exports.handler = async (event) => {
 
   const subject = `New BACK OFFICE application — ${m.fullName}`;
 
-  // Text (human-friendly + raw dump)
   const textLines = [
     `ROLE: ${m.role}`,
     `Source: ${m.source || "-"}`,
@@ -309,7 +302,7 @@ module.exports.handler = async (event) => {
   `;
 
   try {
-    // Internal
+    // Internal notification
     await transport.sendMail({
       from: fromEmail,
       to: toCareers,
