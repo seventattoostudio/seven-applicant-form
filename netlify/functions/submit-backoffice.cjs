@@ -9,7 +9,7 @@ const cors = {
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
-// --- Small helpers ---
+// Helpers
 const ok = (b) => ({ statusCode: 200, headers: cors, body: JSON.stringify(b) });
 const bad = (m) => ({
   statusCode: 400,
@@ -22,137 +22,131 @@ const oops = (m) => ({
   body: JSON.stringify({ ok: false, error: m }),
 });
 
-function readJson(event) {
+function parseBody(event) {
   try {
-    if (!event.body) return {};
     const raw = event.isBase64Encoded
-      ? Buffer.from(event.body, "base64").toString("utf8")
-      : event.body;
-    return JSON.parse(raw);
+      ? Buffer.from(event.body || "", "base64").toString("utf8")
+      : event.body || "";
+
+    const hdrs = event.headers || {};
+    const ct = String(
+      hdrs["content-type"] || hdrs["Content-Type"] || ""
+    ).toLowerCase();
+
+    if (ct.includes("application/json")) {
+      return JSON.parse(raw || "{}");
+    }
+    // tolerant: accept x-www-form-urlencoded
+    if (ct.includes("application/x-www-form-urlencoded")) {
+      const params = new URLSearchParams(raw);
+      const obj = {};
+      for (const [k, v] of params.entries()) {
+        obj[k] = v;
+      }
+      return obj;
+    }
+    // try JSON fallback
+    try {
+      return JSON.parse(raw || "{}");
+    } catch {
+      return {};
+    }
   } catch {
     return null;
   }
 }
 
-// --- Field aliasing (Shopify -> internal) ---
+const v = (x) => (typeof x === "string" ? x.trim() : x);
+
 function mapFields(input) {
-  const v = (x) => (typeof x === "string" ? x.trim() : x);
-
-  // basics
   const fullName =
-    v(input.fullName) ||
-    v(input.name) ||
-    v(input.full_name) ||
-    v(input.applicant_name);
-  const email = v(input.email) || v(input.staff_email);
-  const phone = v(input.phone) || v(input.phone_number) || v(input.tel);
-  const city = v(input.city) || v(input.location) || v(input.city_location);
+    v(input.fullName) || v(input.name) || v(input.applicant_name);
+  const email = v(input.email);
+  const phone = v(input.phone) || v(input.tel);
+  const city = v(input.city) || v(input.location);
 
-  // extras
-  const position =
-    v(input.position) ||
-    v(input.role) ||
-    v(input.job) ||
-    v(input.applying_for) ||
-    "Back Office (Staff)";
-  const availability =
-    v(input.availability) ||
-    v(input.start_date) ||
-    v(input.start) ||
-    v(input.when_available);
+  // Specific Q/A (mirror the form labels)
+  const q1 = v(input.about); // "How do you stay organized when managing multiple responsibilities?"
+  const q2 = v(input.ownershipStory); // "Tell us about a time you documented or maintained order that made work easier for others."
 
-  // textareas (your UI has two)
-  const about =
-    v(input.about) || v(input.q_about) || v(input.experience) || v(input.notes);
-  const ownershipStory =
-    v(input.ownershipStory) ||
-    v(input.ownership_story) ||
-    v(input.q_ownership) ||
-    v(input.ownership);
-
-  // links
-  const portfolio =
-    v(input.portfolio) ||
-    v(input.portfolio_link) ||
-    v(input.website) ||
-    v(input.url) ||
-    v(input.link);
   const resumeLink =
-    v(input.resume_link) ||
-    v(input.video_url) ||
-    v(input.cv_link) ||
-    v(input.drive);
+    v(input.resume_link) || v(input.video_url) || v(input.cv_link);
 
-  // checkbox — include Back Office field name consentProcedures
-  const agreeRaw =
+  const consentRaw =
     input.consentProcedures ??
-    input.agree_policies ??
     input.consent ??
     input.agree ??
     input.agree_sanitation;
-  const agreePolicies = ["true", "on", "yes", "1", "y"].includes(
-    String(agreeRaw).toLowerCase()
+  const consentProcedures = ["true", "on", "yes", "1", "y"].includes(
+    String(consentRaw).toLowerCase()
   );
 
-  // optional override via form
+  const role = v(input.role) || "Back Office (Staff)";
+  const source = v(input.source);
   const notifyEmail = v(input.recipient) || v(input.notify_email);
-  const notifyEmailValid =
-    notifyEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(notifyEmail);
 
   return {
     fullName,
     email,
     phone,
     city,
-    position,
-    availability,
-    about,
-    ownershipStory,
-    portfolio,
+    q1,
+    q2,
     resumeLink,
-    agreePolicies,
+    consentProcedures,
+    role,
+    source,
     notifyEmail,
-    notifyEmailValid,
     raw: input,
   };
 }
 
 function validate(m) {
   const missing = [];
-  if (!m.fullName) missing.push("name");
-  if (!m.email) missing.push("email");
+  if (!m.fullName) missing.push("Full Name");
+  if (!m.email) missing.push("Email");
+  if (!m.phone) missing.push("Phone");
+  if (!m.city) missing.push("City/Location");
+  if (!m.q1) missing.push("Q1 (organization)");
+  if (!m.q2) missing.push("Q2 (documented order)");
+  if (!m.resumeLink) missing.push("Resume/Video link");
   return missing;
 }
 
 module.exports.handler = async (event) => {
-  // preflight
   if (event.httpMethod === "OPTIONS")
     return { statusCode: 200, headers: cors, body: "ok" };
   if (event.httpMethod !== "POST") return bad("Use POST");
 
-  const body = readJson(event);
-  if (body === null) return bad("Invalid JSON");
+  const body = parseBody(event);
+  if (body === null) return bad("Invalid body");
+
+  // honeypot
+  if (v(body.hp_extra_info)) return ok({ ok: true, skipped: true });
 
   const m = mapFields(body);
   const missing = validate(m);
   if (missing.length) {
-    console.error("Back Office submit missing:", missing, {
+    console.error("BackOffice submit missing:", missing, {
       gotKeys: Object.keys(body || {}),
     });
     return bad(`Missing required field(s): ${missing.join(", ")}`);
   }
 
-  // --- Email transport (SendGrid via SMTP) ---
   const sendgridKey = process.env.SENDGRID_API_KEY;
   if (!sendgridKey) return oops("SENDGRID_API_KEY not configured");
 
-  const toCareers = m.notifyEmailValid
-    ? m.notifyEmail
-    : process.env.BACKOFFICE_RECEIVER ||
-      process.env.STAFF_RECEIVER ||
-      "careers@seventattoolv.com";
+  const toCareers =
+    m.notifyEmail && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(m.notifyEmail)
+      ? m.notifyEmail
+      : process.env.BACKOFFICE_RECEIVER ||
+        process.env.INTERNAL_EMAIL ||
+        "careers@seventattoolv.com";
 
-  const fromEmail = process.env.SEND_FROM || "careers@seventattoolv.com";
+  const fromEmail =
+    process.env.SEND_FROM ||
+    process.env.FROM_EMAIL ||
+    "careers@seventattoolv.com";
 
   const transport = nodemailer.createTransport({
     host: "smtp.sendgrid.net",
@@ -161,29 +155,31 @@ module.exports.handler = async (event) => {
     auth: { user: "apikey", pass: sendgridKey },
   });
 
-  const subject = `New BACK OFFICE application — ${m.fullName}${
-    m.position ? ` (${m.position})` : ""
-  }`;
+  const subject = `New Back Office application — ${m.fullName}`;
 
   const lines = [
-    `Name: ${m.fullName}`,
+    `ROLE: ${m.role}`,
+    `Source: ${m.source || "-"}`,
+    "",
+    `Full Name: ${m.fullName}`,
     `Email: ${m.email}`,
-    `Phone: ${m.phone || "(not provided)"}`,
-    `City/Location: ${m.city || "(not provided)"}`,
-    `Position/Role: ${m.position || "Back Office (Staff)"}`,
-    `Resume/Video: ${m.resumeLink || "(not provided)"}`,
+    `Phone: ${m.phone}`,
+    `City / Location: ${m.city}`,
     "",
-    `About (What do you need from a workplace to feel secure and grow?):`,
-    m.about || "(not provided)",
+    `How do you stay organized when managing multiple responsibilities?`,
+    `${m.q1}`,
     "",
-    `Ownership story (when something went wrong):`,
-    m.ownershipStory || "(not provided)",
+    `Tell us about a time you documented or maintained order that made work easier for others.`,
+    `${m.q2}`,
     "",
-    `Agrees to procedures/policies: ${m.agreePolicies ? "YES" : "NO"}`,
+    `Resume / 60-sec video link: ${m.resumeLink}`,
+    `Consents to procedures & daily records: ${
+      m.consentProcedures ? "YES" : "NO"
+    }`,
   ];
 
   try {
-    // internal
+    // Internal notification
     await transport.sendMail({
       from: fromEmail,
       to: toCareers,
@@ -191,19 +187,21 @@ module.exports.handler = async (event) => {
       text: lines.join("\n"),
     });
 
-    // confirmation to applicant
+    // Applicant confirmation
     await transport.sendMail({
       from: fromEmail,
       to: m.email,
       subject: "Seven Tattoo — We received your Back Office application",
-      text: `Hi ${
-        m.fullName || ""
-      },\n\nThanks for applying to Seven Tattoo (Back Office). We’ve received your submission and will review it shortly.\n— Seven Tattoo`,
+      text: `Hi ${m.fullName || ""},
+
+Thanks for applying to Seven Tattoo. We’ve received your Back Office application and will review it shortly.
+
+— Seven Tattoo`,
     });
 
     return ok({ ok: true });
   } catch (err) {
-    console.error("Back Office submit mail error:", err?.response?.body || err);
+    console.error("BackOffice mail error:", err?.response?.body || err);
     return oops("Email send failed");
   }
 };
