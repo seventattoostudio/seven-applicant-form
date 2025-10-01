@@ -95,18 +95,19 @@ function mapFields(input) {
     getByRegex(o, [/about/i, /(organized|secure|grow|need).*work(place)?/i]);
 
   // Q2: ownership story / went wrong — catch everything
+  const q2Candidates = [
+    "ownershipStory",
+    "ownership_story",
+    "ownership",
+    "answer2",
+    "q2",
+    "story",
+    "when_something_went_wrong",
+    "went_wrong",
+    "what_went_wrong",
+  ];
   const q2 =
-    getFirstCI(o, [
-      "ownershipStory",
-      "ownership_story",
-      "answer2",
-      "q2",
-      "ownership",
-      "story",
-      "when_something_went_wrong",
-      "went_wrong",
-      "what_went_wrong",
-    ]) ||
+    getFirstCI(o, q2Candidates) ||
     getByRegex(o, [
       /owner(ship)?[_ ]?story/i,
       /(document|maintain(ed)?|order|went[_ ]?wrong|made[_ ]?work[_ ]?easier)/i,
@@ -142,6 +143,7 @@ function mapFields(input) {
     city,
     q1,
     q2,
+    q2Candidates,
     resumeLink,
     consent,
     role,
@@ -159,8 +161,12 @@ function validate(m) {
   if (!m.email) miss.push("Email");
   if (!m.phone) miss.push("Phone");
   if (!m.city) miss.push("City/Location");
+  // Consider Q1/Q2 required if NEITHER mapped nor any candidate is present
   if (!m.q1) miss.push("Q1 (organization)");
-  if (!m.q2) miss.push("Q2 (documented order)");
+  const hasQ2 =
+    !!m.q2 ||
+    m.q2Candidates.some((k) => m.raw[k] && String(m.raw[k]).trim() !== "");
+  if (!hasQ2) miss.push("Q2 (ownership story)");
   if (!m.resumeLink) miss.push("Resume/Video link");
   return miss;
 }
@@ -226,6 +232,14 @@ module.exports.handler = async (event) => {
 
   const subject = `New BACK OFFICE application — ${m.fullName}`;
 
+  // Ownership story value with hard fallback to raw keys so it never shows empty if present
+  const ownershipVal =
+    m.q2 ||
+    m.q2Candidates
+      .map((k) => m.raw[k])
+      .find((vv) => vv && String(vv).trim() !== "") ||
+    "";
+
   const textLines = [
     `ROLE: ${m.role}`,
     `Source: ${m.source || "-"}`,
@@ -239,8 +253,8 @@ module.exports.handler = async (event) => {
     `How do you stay organized when managing multiple responsibilities?`,
     `${m.q1}`,
     ``,
-    `Tell us about a time you documented or maintained order that made work easier for others.`,
-    `${m.q2}`,
+    `Ownership story (when something went wrong):`,
+    `${ownershipVal || "(not provided)"}`,
     ``,
     `Resume / Portfolio / Video URL: ${m.resumeLink}`,
     `Consent to procedures & daily records: ${m.consent ? "YES" : "NO"}`,
@@ -279,13 +293,10 @@ module.exports.handler = async (event) => {
         ${row("Phone", m.phone)}
         ${row("City / Location", m.city)}
         ${row(
-          "How do you stay organized when managing multiple responsibilities?",
+          "About (What do you need from a workplace to feel secure and grow?)",
           m.q1
         )}
-        ${row(
-          "Tell us about a time you documented or maintained order that made work easier for others.",
-          m.q2
-        )}
+        ${row("Ownership story (when something went wrong)", ownershipVal)}
         ${row("Resume / Portfolio / Video URL", m.resumeLink)}
         ${row(
           "Consent to procedures & daily records",
@@ -302,7 +313,6 @@ module.exports.handler = async (event) => {
   `;
 
   try {
-    // Internal notification
     await transport.sendMail({
       from: fromEmail,
       to: toCareers,
@@ -311,7 +321,6 @@ module.exports.handler = async (event) => {
       html,
     });
 
-    // Applicant confirmation
     await transport.sendMail({
       from: fromEmail,
       to: m.email,
