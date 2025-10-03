@@ -36,19 +36,10 @@ function readJson(event) {
   }
 }
 
-// Aliases helper
 const v = (x) => (typeof x === "string" ? x.trim() : x);
-const isURL = (u) => {
-  try {
-    new URL(u);
-    return true;
-  } catch {
-    return false;
-  }
-};
 const igIsHandle = (h) => /^@?[A-Za-z0-9._]{2,30}$/.test(h || "");
 
-// Map both old + new fields to a normalized model
+// Shopify → internal aliases (original fields)
 function mapFields(input) {
   const fullName =
     v(input.fullName) ||
@@ -59,50 +50,28 @@ function mapFields(input) {
   const email = v(input.email) || v(input.applicant_email);
   const city = v(input.city) || v(input.location) || v(input.city_location);
 
-  // IG: enforce handle (not URL)
   let igHandle =
     v(input.ig_handle) || v(input.instagram) || v(input.instagram_handle);
-  if (igHandle && /^https?:\/\//i.test(igHandle)) igHandle = ""; // reject links
+  if (igHandle && /^https?:\/\//i.test(igHandle)) igHandle = ""; // require handle, not URL
   if (igHandle && !igHandle.startsWith("@")) igHandle = "@" + igHandle;
 
-  // NEW questions (with fallbacks to older names where sensible)
-  const healedGalleryUrl =
-    v(input.healed_gallery_url) ||
-    v(input.healedResultsUrl) ||
-    v(input.gallery) ||
-    v(input.portfolio_url);
-  const sanitationPractices =
-    v(input.sanitation_practices) ||
-    v(input.sanitation) ||
-    v(input.sanitationCompliance) ||
-    v(input.q_sanitation);
-  const masteryDefinition =
-    v(input.mastery_definition) || v(input.mastery) || v(input.q_mastery);
-  const longTermResidency =
-    v(input.long_term_residency) ||
-    v(input.longTermResidency) ||
-    v(input.residency);
+  const proud =
+    v(input.q_proud) ||
+    v(input.proud) ||
+    v(input.q_vision) ||
+    v(input.question_proud);
+  const commitment =
+    v(input.q_commitment) || v(input.commitment) || v(input.long_term);
 
-  const accountabilityAck =
-    input.accountability_ack ??
-    input.accountability ??
-    input.healed_results_accountability ??
+  const agreeRaw =
+    input.agree_sanitation ??
+    input.agreeSanitation ??
+    input.sanitation ??
     input.agree;
+  const agreeSanitation = ["true", "on", "yes", "1"].includes(
+    String(agreeRaw).toLowerCase()
+  );
 
-  const workflowConsistency =
-    v(input.workflow_consistency) || v(input.process) || v(input.q_process);
-  const idealClient =
-    v(input.ideal_client) || v(input.idealCollector) || v(input.q_ideal);
-
-  const supportingLink =
-    v(input.supporting_link) ||
-    v(input.portfolio) ||
-    v(input.portfolio_link) ||
-    v(input.website) ||
-    v(input.url) ||
-    v(input.link);
-
-  // Required video
   const videoUrl =
     v(input.video_url) ||
     v(input.video) ||
@@ -110,63 +79,29 @@ function mapFields(input) {
     v(input.video_intro);
 
   return {
-    // contact
     fullName,
     phone,
     email,
     city,
     igHandle,
-
-    // new questions
-    healedGalleryUrl,
-    sanitationPractices,
-    masteryDefinition,
-    longTermResidency,
-    accountabilityAck:
-      String(accountabilityAck).toLowerCase() === "true" ||
-      ["on", "yes", "1", "true"].includes(
-        String(accountabilityAck).toLowerCase()
-      ),
-    workflowConsistency,
-    idealClient,
-
-    // links
-    supportingLink,
+    proud,
+    commitment,
+    agreeSanitation,
     videoUrl,
-
     raw: input,
   };
 }
 
 function validate(m) {
   const missing = [];
-
-  if (!m.fullName) missing.push("Full Name");
-  if (!m.email) missing.push("Email");
-  if (!m.city) missing.push("City/Location");
-
-  if (!m.igHandle || !igIsHandle(m.igHandle))
-    missing.push("Instagram Handle (plain @handle)");
-
-  if (!m.healedGalleryUrl) missing.push("Healed Results Gallery (URL)");
-  if (!m.sanitationPractices) missing.push("Sanitation & compliance practices");
-  if (!m.masteryDefinition) missing.push("Mastery/excellence definition");
-  if (!m.longTermResidency) missing.push("Long-term residency (Yes/No)");
-  if (!m.accountabilityAck) missing.push("Accountability for healed results");
-  if (!m.workflowConsistency)
-    missing.push("Process (consult → stencil → tattoo → aftercare)");
-  if (!m.idealClient) missing.push("Ideal collector/client");
-
-  if (!m.videoUrl) missing.push("60-second video link");
-
-  // URL sanity
-  if (m.healedGalleryUrl && !isURL(m.healedGalleryUrl))
-    missing.push("Healed Results Gallery must be a valid URL");
-  if (m.videoUrl && !isURL(m.videoUrl))
-    missing.push("60-second video must be a valid URL");
-  if (m.supportingLink && !isURL(m.supportingLink))
-    missing.push("Supporting link must be a valid URL");
-
+  if (!m.fullName) missing.push("name");
+  if (!m.email) missing.push("email");
+  if (!m.city) missing.push("city/location");
+  if (!m.igHandle || !igIsHandle(m.igHandle)) missing.push("ig_handle");
+  if (!m.proud) missing.push("q_proud");
+  if (!m.commitment) missing.push("q_commitment");
+  if (!m.agreeSanitation) missing.push("agree_sanitation");
+  if (!m.videoUrl) missing.push("video_url");
   return missing;
 }
 
@@ -199,62 +134,42 @@ exports.handler = async (event) => {
     auth: { user: "apikey", pass: sendgridKey },
   });
 
-  // Build email that mirrors labels exactly
   const lines = [
     `Artist Application — ${new Date().toLocaleString()}`,
     "",
-    `Full Name: ${mapped.fullName}`,
-    `Phone: ${mapped.phone || "(not provided)"}`,
+    `Name: ${mapped.fullName}`,
     `Email: ${mapped.email}`,
+    `Phone: ${mapped.phone || "(not provided)"}`,
     `City/Location: ${mapped.city}`,
     `Instagram: ${mapped.igHandle}`,
+    `Video: ${mapped.videoUrl}`,
     "",
-    `Healed Results Gallery (URL): ${mapped.healedGalleryUrl}`,
+    "Q — Proud (5-year):",
+    mapped.proud,
     "",
-    "Describe your sanitation & compliance practices:",
-    mapped.sanitationPractices,
+    "Q — Long-term commitment:",
+    mapped.commitment,
     "",
-    "What does mastery/excellence look like in your work?",
-    mapped.masteryDefinition,
-    "",
-    `Long-term residency: ${mapped.longTermResidency}`,
-    `Accountability for healed results acknowledged: ${
-      mapped.accountabilityAck ? "Yes" : "No"
-    }`,
-    "",
-    "Outline your typical process (consult → stencil → tattoo → aftercare):",
-    mapped.workflowConsistency,
-    "",
-    "Describe your ideal collector/client:",
-    mapped.idealClient,
+    `Agrees to sanitation/compliance: ${mapped.agreeSanitation ? "YES" : "NO"}`,
   ];
-
-  if (mapped.supportingLink)
-    lines.push("", `Supporting link: ${mapped.supportingLink}`);
-  lines.push("", `60-sec video: ${mapped.videoUrl}`);
-
   const subject = `New ARTIST application — ${mapped.fullName}`;
   const text = lines.join("\n");
 
   try {
-    // Send to careers
     await transporter.sendMail({
       from: fromEmail,
       to: toCareers,
       subject,
       text,
     });
-
-    // Auto-reply to applicant
     await transporter.sendMail({
       from: fromEmail,
       to: mapped.email,
       subject: "Seven Tattoo — We received your Artist application",
       text: `Hi ${
         mapped.fullName || ""
-      },\n\nThanks for applying to Seven Tattoo. We’ve received your submission and will review it shortly.\n\n— Seven Tattoo`,
+      },\n\nThanks for applying to Seven Tattoo. We’ve received your submission and will review it shortly.\n— Seven Tattoo`,
     });
-
     return ok({ ok: true });
   } catch (err) {
     console.error("Artist submit mail error:", err?.response?.body || err);
