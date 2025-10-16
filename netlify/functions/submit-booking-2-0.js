@@ -1,20 +1,25 @@
 // netlify/functions/submit-booking-2-0.js
 // Seven Tattoo — Booking Intake (robust CORS + safe honeypot + diagnostics + SendGrid)
+// This function sends ONLY to bookings@seventattoolv.com
 
 const sgMail = require("@sendgrid/mail");
 
-/* ========= 1. CORS allowlist ========= */
+/* ========= 1) CORS allowlist ========= */
 const EXACT_ORIGINS = new Set([
   "https://seventattoolv.com",
   "https://www.seventattoolv.com",
+  "https://seventattoolv.myshopify.com",
   "https://admin.shopify.com",
 ]);
 
-// Allow previews like https://seven-tattoo-studio.myshopify.com
 function isAllowedOrigin(origin = "") {
   try {
     const u = new URL(origin);
-    return EXACT_ORIGINS.has(origin) || u.hostname.endsWith(".myshopify.com");
+    return (
+      EXACT_ORIGINS.has(origin) ||
+      u.hostname.endsWith(".myshopify.com") ||
+      u.hostname.endsWith(".shopify.com")
+    );
   } catch {
     return false;
   }
@@ -30,22 +35,22 @@ function corsHeaders(origin = "") {
   };
 }
 
-/* ========= 2. Environment setup ========= */
+/* ========= 2) Env / addresses ========= */
+// Keep FROM configurable via env; TO is hard-coded for this form only.
 const SENDGRID_KEY = process.env.SENDGRID_API_KEY || process.env.SENDGRID || "";
 const FROM_EMAIL =
   process.env.FROM_EMAIL ||
   process.env.SEND_FROM ||
   "no-reply@seventattoolv.com";
-const TO_EMAIL =
-  process.env.INTERNAL_EMAIL ||
-  process.env.BACKOFFICE_RECEIVER ||
-  "careers@seventattoolv.com";
+
+// >>> Only this hidden booking form goes to bookings@ <<<
+const TO_EMAIL = "bookings@seventattoolv.com";
 
 if (SENDGRID_KEY) sgMail.setApiKey(SENDGRID_KEY);
 
-/* ========= 3. Function handler ========= */
+/* ========= 3) Handler ========= */
 exports.handler = async (event) => {
-  // --- Preflight ---
+  // Preflight
   if (event.httpMethod === "OPTIONS") {
     return {
       statusCode: 200,
@@ -61,7 +66,7 @@ exports.handler = async (event) => {
     };
   }
 
-  // --- Parse body ---
+  // Parse body
   let body = {};
   try {
     body = JSON.parse(event.body || "{}");
@@ -73,7 +78,7 @@ exports.handler = async (event) => {
     };
   }
 
-  // --- Honeypot (ignore only if filled with real content) ---
+  // Honeypot (only treat as spam if it looks like a real URL)
   const hp = String(body.website || "").trim();
   if (hp && /https?:\/\//i.test(hp)) {
     return {
@@ -83,7 +88,7 @@ exports.handler = async (event) => {
     };
   }
 
-  // --- Validate required fields ---
+  // Validate required fields
   const errors = [];
   const req = (k, label = k) => {
     if (!body[k] || String(body[k]).trim() === "")
@@ -106,7 +111,7 @@ exports.handler = async (event) => {
     };
   }
 
-  /* ========= 4. Compose email ========= */
+  // Compose email
   const submittedAt = new Date().toISOString();
   const artist = String(body.artist || "").trim();
   const sourceLink = String(body.source_link || "").trim();
@@ -159,7 +164,7 @@ exports.handler = async (event) => {
     html,
   };
 
-  /* ========= 5. Send email via SendGrid ========= */
+  // Send
   let attemptedSend = false,
     sgStatus = null,
     sgError = null;
@@ -194,7 +199,7 @@ exports.handler = async (event) => {
   };
 };
 
-/* ========= 6. Helpers ========= */
+/* ========= 4) Helpers ========= */
 function escapeHtml(s = "") {
   return String(s).replace(
     /[&<>"']/g,
