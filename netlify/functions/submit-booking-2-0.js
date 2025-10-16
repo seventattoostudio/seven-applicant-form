@@ -207,3 +207,4 @@ exports.handler = async (event) => {
     };
   }
 };
+// redeploy to apply function scopes
