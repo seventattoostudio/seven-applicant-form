@@ -1,13 +1,13 @@
 // netlify/functions/submit-booking-2-0.js
-// Booking Intake — CORS + validation + SendGrid email + DIAGNOSTICS (safe to return)
-// NOTE: Diagnostics will return only booleans/status codes — never your API key.
+// Booking Intake — CORS + validation + SendGrid email (+ diagnostics)
 
 const sgMail = require("@sendgrid/mail");
 
+// Allow your live domains (add your myshopify preview if testing the editor)
 const ALLOWED_ORIGINS = [
   "https://seventattoolv.com",
   "https://www.seventattoolv.com",
-  // "https://YOUR-STORE.myshopify.com" // add if testing from preview
+  // "https://YOUR-STORE.myshopify.com"
 ];
 
 function corsHeaders(origin = "") {
@@ -30,6 +30,7 @@ function escapeHtml(s = "") {
 }
 
 exports.handler = async (event) => {
+  // CORS preflight
   if (event.httpMethod === "OPTIONS") {
     return {
       statusCode: 200,
@@ -37,6 +38,7 @@ exports.handler = async (event) => {
       body: "",
     };
   }
+
   if (event.httpMethod !== "POST") {
     return {
       statusCode: 405,
@@ -45,10 +47,19 @@ exports.handler = async (event) => {
     };
   }
 
+  // Diagnostics you’ll see in the response (safe; no secrets)
   const diagnostics = {
     haveKey: !!process.env.SENDGRID_API_KEY,
-    to: process.env.INTAKE_TO || null,
-    from: process.env.INTAKE_FROM || null,
+    to:
+      process.env.INTAKE_TO ||
+      process.env.INTERNAL_EMAIL ||
+      process.env.BACKOFFICE_RECEIVER ||
+      null,
+    from:
+      process.env.INTAKE_FROM ||
+      process.env.FROM_EMAIL ||
+      process.env.SEND_FROM ||
+      null,
     bcc: !!process.env.INTAKE_BCC,
     attemptedSend: false,
     sendgridStatus: null,
@@ -67,7 +78,7 @@ exports.handler = async (event) => {
       };
     }
 
-    // Validate
+    // Validate required fields
     const errors = [];
     const req = (k, label = k) => {
       if (!body[k] || String(body[k]).trim() === "")
@@ -81,7 +92,6 @@ exports.handler = async (event) => {
     req("scale", "Scale");
     req("hear", "How did you hear about us");
     if (!body.consent) errors.push("Consent checkbox must be checked");
-
     if (errors.length) {
       return {
         statusCode: 400,
@@ -90,7 +100,7 @@ exports.handler = async (event) => {
       };
     }
 
-    // Compose message
+    // Compose summary
     const submittedAt = new Date().toISOString();
     const summaryText = [
       "— Seven Tattoo: Booking Intake —",
@@ -124,14 +134,32 @@ exports.handler = async (event) => {
       </div>
     `;
 
-    // Log as backup
-    console.log(summaryText);
+    console.log(summaryText); // backup logging
 
-    // Attempt email if env vars present
+    // ---- Email vars: use your existing keys first, then INTAKE_* if you add them later
     const KEY = process.env.SENDGRID_API_KEY;
-    const TO = process.env.INTAKE_TO;
-    const FROM = process.env.INTAKE_FROM;
+    const TO =
+      process.env.INTERNAL_EMAIL ||
+      process.env.BACKOFFICE_RECEIVER ||
+      process.env.INTAKE_TO ||
+      null;
+    const FROM =
+      process.env.FROM_EMAIL ||
+      process.env.SEND_FROM ||
+      process.env.INTAKE_FROM ||
+      null;
     const BCC = process.env.INTAKE_BCC;
+
+    console.log(
+      "[email] haveKey:",
+      !!KEY,
+      "to:",
+      TO,
+      "from:",
+      FROM,
+      "bcc:",
+      !!BCC
+    );
 
     if (KEY && TO && FROM) {
       try {
@@ -146,9 +174,14 @@ exports.handler = async (event) => {
         };
         diagnostics.attemptedSend = true;
         const resp = await sgMail.send(msg);
-        diagnostics.sendgridStatus = resp?.[0]?.statusCode || null; // expect 202 on success
+        diagnostics.sendgridStatus = resp?.[0]?.statusCode || null; // expect 202
+        console.log(
+          "[email] sent ok:",
+          Array.isArray(resp),
+          "statusCode:",
+          diagnostics.sendgridStatus
+        );
       } catch (mailErr) {
-        // capture concise error (never include secrets)
         const sg = mailErr?.response?.body;
         diagnostics.sendgridError =
           sg?.errors?.[0]?.message ||
@@ -174,4 +207,3 @@ exports.handler = async (event) => {
     };
   }
 };
-// redeploy for env vars
