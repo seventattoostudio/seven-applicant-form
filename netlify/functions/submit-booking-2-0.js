@@ -8,11 +8,12 @@ sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 const ALLOWED_ORIGINS = new Set([
   "https://seventattoolv.com",
   "https://www.seventattoolv.com",
-  // "https://seventattoolv.myshopify.com", // add if testing on myshopify preview
+  // "https://seventattoolv.myshopify.com", // add if testing previews
   // "https://preview-your-theme-domain.example"
 ]);
 
 function corsHeaders(origin) {
+  // Always return readable CORS headers (never empty string)
   return {
     "Access-Control-Allow-Origin": origin || "*",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -23,14 +24,14 @@ function corsHeaders(origin) {
 }
 
 export default async (req, context) => {
-  const method = req.method.toUpperCase();
+  const method = (req.method || "GET").toUpperCase();
   const origin = req.headers.get("origin") || "";
-  console.log("Incoming Origin:", origin);
+  const isAllowed = ALLOWED_ORIGINS.has(origin);
+  const allowOrigin = isAllowed ? origin : origin || "*"; // echo back so errors are readable
 
-  // Preflight
+  // OPTIONS preflight
   if (method === "OPTIONS") {
-    const allow = ALLOWED_ORIGINS.has(origin) ? origin : "";
-    return new Response("", { status: 204, headers: corsHeaders(allow) });
+    return new Response("", { status: 204, headers: corsHeaders(allowOrigin) });
   }
 
   if (method !== "POST") {
@@ -38,14 +39,13 @@ export default async (req, context) => {
       JSON.stringify({ ok: false, error: "Method not allowed" }),
       {
         status: 405,
-        headers: corsHeaders(ALLOWED_ORIGINS.has(origin) ? origin : ""),
+        headers: corsHeaders(allowOrigin),
       }
     );
   }
 
-  // Check origin
-  const allowOrigin = ALLOWED_ORIGINS.has(origin) ? origin : "";
-  if (!allowOrigin) {
+  // Hard fail for unknown origins, but still return readable JSON (no browser CORS block)
+  if (!isAllowed) {
     return new Response(
       JSON.stringify({ ok: false, error: `Origin not allowed: ${origin}` }),
       {
@@ -77,7 +77,7 @@ export default async (req, context) => {
   // Extract fields (mirror frontend)
   const {
     meaning = "",
-    vision = "", // NEW
+    vision = "", // NEW (required, 4k max)
     fullName = "",
     email = "",
     phone = "",
@@ -92,7 +92,7 @@ export default async (req, context) => {
   // Validation
   const missing = [];
   if (!meaning.trim()) missing.push("Meaning");
-  if (!vision.trim()) missing.push("Vision"); // required
+  if (!vision.trim()) missing.push("Vision");
   if (!fullName.trim()) missing.push("Full name");
   if (!email.trim()) missing.push("Email");
   if (!phone.trim()) missing.push("Phone");
@@ -128,7 +128,7 @@ export default async (req, context) => {
     ``,
     `Submitted: ${submittedIso}`,
     `Meaning: ${meaning}`,
-    `Vision: ${vision}`, // NEW
+    `Vision: ${vision}`,
     `Full Name: ${fullName}`,
     `Email: ${email}`,
     `Phone: ${phone}`,
@@ -161,7 +161,7 @@ export default async (req, context) => {
   `;
 
   try {
-    const resp = await sgMail.send({
+    await sgMail.send({
       to: toEmail,
       from: {
         email: "no-reply@seventattoolv.com",
@@ -178,14 +178,14 @@ export default async (req, context) => {
       headers: corsHeaders(allowOrigin),
     });
   } catch (err) {
-    console.error(
-      "SendGrid error:",
-      err?.response?.body || err?.message || err
-    );
     const msg =
       err?.response?.body?.errors?.[0]?.message ||
       err?.message ||
       "Email send failed";
+    console.error(
+      "SendGrid error:",
+      err?.response?.body || err?.message || err
+    );
     return new Response(JSON.stringify({ ok: false, error: msg }), {
       status: 500,
       headers: corsHeaders(allowOrigin),
