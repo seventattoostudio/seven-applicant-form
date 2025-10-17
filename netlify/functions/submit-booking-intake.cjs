@@ -1,14 +1,17 @@
-// netlify/functions/submit-booking-intake.cjs  (CommonJS)
+// netlify/functions/submit-booking-intake.cjs
 
-// ----- CORS -----
+// ---------- CORS ----------
 const ALLOWLIST = [
   "https://seventattoolv.com",
   "https://www.seventattoolv.com",
   "https://seventattoolv.myshopify.com",
   "https://frolicking-sundae-64ec36.netlify.app",
 ];
-const pickAllowedOrigin = (o = "") =>
-  ALLOWLIST.includes(o) ? o : "https://frolicking-sundae-64ec36.netlify.app";
+
+const pickAllowedOrigin = (origin = "") =>
+  ALLOWLIST.includes(origin)
+    ? origin
+    : "https://frolicking-sundae-64ec36.netlify.app";
 
 function corsHeaders(origin) {
   return {
@@ -22,30 +25,31 @@ function corsHeaders(origin) {
   };
 }
 
-function ok(headers, obj = {}) {
-  return {
-    statusCode: 200,
-    headers,
-    body: JSON.stringify({ ok: true, ...obj }),
-  };
-}
-function err(headers, code, msg, more = {}) {
-  return {
-    statusCode: code,
-    headers,
-    body: JSON.stringify({ ok: false, error: msg, ...more }),
-  };
-}
-const required = (v) =>
+const ok = (headers, obj = {}) => ({
+  statusCode: 200,
+  headers,
+  body: JSON.stringify({ ok: true, ...obj }),
+});
+
+const err = (headers, code, message, more = {}) => ({
+  statusCode: code,
+  headers,
+  body: JSON.stringify({ ok: false, error: message, ...more }),
+});
+
+const isFilled = (v) =>
   v !== undefined && v !== null && String(v).trim() !== "";
 
-// Optional email via SendGrid, only if envs are present and module is installed.
+// ---------- Optional Email (SendGrid) ----------
 async function maybeSendEmail(payload) {
   const key = process.env.SENDGRID_API_KEY;
   const to = process.env.BOOKING_TO;
   const from = process.env.BOOKING_FROM;
-  if (!key || !to || !from)
+
+  // If env vars are missing, skip email gracefully
+  if (!key || !to || !from) {
     return { sent: false, reason: "Email disabled (missing env vars)" };
+  }
 
   let sgMail;
   try {
@@ -77,35 +81,43 @@ async function maybeSendEmail(payload) {
       from,
       subject,
       text: lines.join("\n"),
-      html: `<pre style="font:14px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">${lines.join(
-        "\n"
-      )}</pre>`,
+      html: `<pre style="font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">${lines
+        .map((l) => l.replace(/</g, "&lt;"))
+        .join("\n")}</pre>`,
     });
     return { sent: true };
   } catch (e) {
-    return { sent: false, reason: String(e?.response?.body || e.message || e) };
+    const reason = e?.response?.body || e?.message || String(e);
+    return { sent: false, reason };
   }
 }
 
+// ---------- Handler ----------
 exports.handler = async (event) => {
   const origin = event.headers?.origin || "";
   const headers = corsHeaders(origin);
 
-  // IMPORTANT: 200 for preflight (avoid undici 204 bug)
+  // Preflight — always 200 (avoid undici 204 bug)
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 200, headers, body: "" };
   }
 
+  // Method check
   if (event.httpMethod !== "POST") {
     return err(headers, 405, "Method Not Allowed");
   }
 
-  const ct =
-    event.headers["content-type"] || event.headers["Content-Type"] || "";
-  if (!ct.toLowerCase().includes("application/json")) {
+  // Content-Type check
+  const ct = (
+    event.headers["content-type"] ||
+    event.headers["Content-Type"] ||
+    ""
+  ).toLowerCase();
+  if (!ct.includes("application/json")) {
     return err(headers, 415, "Unsupported Media Type – use application/json");
   }
 
+  // Parse JSON
   let data;
   try {
     data = JSON.parse(event.body || "{}");
@@ -113,13 +125,20 @@ exports.handler = async (event) => {
     return err(headers, 400, "Invalid JSON in request body");
   }
 
-  // Minimal required fields
-  const missing = ["fullName", "email", "consent"].filter(
-    (f) => !required(data[f])
-  );
-  if (missing.length)
-    return err(headers, 422, "Missing required fields", { missing });
+  // Honeypot (hidden field "website"): if filled, pretend success
+  if (isFilled(data.website)) {
+    return ok(headers, { diagnostics: { dropped: true, reason: "honeypot" } });
+  }
 
+  // Required fields (minimal)
+  const missing = ["fullName", "email", "consent"].filter(
+    (f) => !isFilled(data[f])
+  );
+  if (missing.length) {
+    return err(headers, 422, "Missing required fields", { missing });
+  }
+
+  // Normalize payload
   const payload = {
     meaning: data.meaning || "",
     vision: data.vision || "",
@@ -134,11 +153,12 @@ exports.handler = async (event) => {
     source_link: data.source_link || data.source || "",
   };
 
+  // Send email if configured
   const email = await maybeSendEmail(payload);
 
+  // Success
   return ok(headers, {
     diagnostics: {
-      origin,
       allowedOrigin: headers["Access-Control-Allow-Origin"],
       email,
     },
