@@ -8,8 +8,7 @@ sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 const ALLOWED_ORIGINS = new Set([
   "https://seventattoolv.com",
   "https://www.seventattoolv.com",
-  // "https://seventattoolv.myshopify.com", // add if testing previews
-  // "https://preview-your-theme-domain.example"
+  "https://seventattoolv.myshopify.com", // add this line
 ]);
 
 // --- CORS helpers (echo requested headers so preflight always passes) ---
