@@ -1,18 +1,15 @@
-// netlify/functions/submit-booking-2-0.js
-// Classic Functions (CJS) + CORS; avoid 204 to dodge undici bug.
+cat > (netlify / functions / submit - booking - intake.cjs) << "EOF";
+// netlify/functions/submit-booking-2-0.cjs  (CommonJS)
 
+// ----- CORS -----
 const ALLOWLIST = [
   "https://seventattoolv.com",
   "https://www.seventattoolv.com",
   "https://seventattoolv.myshopify.com",
   "https://frolicking-sundae-64ec36.netlify.app",
 ];
-
-function pickAllowedOrigin(reqOrigin = "") {
-  return ALLOWLIST.includes(reqOrigin)
-    ? reqOrigin
-    : "https://frolicking-sundae-64ec36.netlify.app";
-}
+const pickAllowedOrigin = (o = "") =>
+  ALLOWLIST.includes(o) ? o : "https://frolicking-sundae-64ec36.netlify.app";
 
 function corsHeaders(origin) {
   return {
@@ -26,27 +23,24 @@ function corsHeaders(origin) {
   };
 }
 
-function ok(headers, body = {}) {
+function ok(headers, obj = {}) {
   return {
     statusCode: 200,
     headers,
-    body: JSON.stringify({ ok: true, ...body }),
+    body: JSON.stringify({ ok: true, ...obj }),
   };
 }
-
-function err(headers, code, message, more = {}) {
+function err(headers, code, msg, more = {}) {
   return {
     statusCode: code,
     headers,
-    body: JSON.stringify({ ok: false, error: message, ...more }),
+    body: JSON.stringify({ ok: false, error: msg, ...more }),
   };
 }
+const required = (v) =>
+  v !== undefined && v !== null && String(v).trim() !== "";
 
-function required(v) {
-  return v !== undefined && v !== null && String(v).trim() !== "";
-}
-
-// OPTIONAL email via SendGrid (enable env vars SENDGRID_API_KEY, BOOKING_TO, BOOKING_FROM)
+// Optional email via SendGrid, only if envs are present and module is installed.
 async function maybeSendEmail(payload) {
   const key = process.env.SENDGRID_API_KEY;
   const to = process.env.BOOKING_TO;
@@ -54,7 +48,13 @@ async function maybeSendEmail(payload) {
   if (!key || !to || !from)
     return { sent: false, reason: "Email disabled (missing env vars)" };
 
-  const sgMail = await import("@sendgrid/mail").then((m) => m.default);
+  let sgMail;
+  try {
+    sgMail = require("@sendgrid/mail");
+  } catch {
+    return { sent: false, reason: "@sendgrid/mail not installed" };
+  }
+
   sgMail.setApiKey(key);
 
   const subject = `Booking Intake – ${payload.fullName || "New Lead"}`;
@@ -92,7 +92,7 @@ exports.handler = async (event) => {
   const origin = event.headers?.origin || "";
   const headers = corsHeaders(origin);
 
-  // IMPORTANT: return 200 (not 204) for preflight to avoid undici/Response bug.
+  // IMPORTANT: 200 for preflight (avoid undici 204 bug)
   if (event.httpMethod === "OPTIONS") {
     return { statusCode: 200, headers, body: "" };
   }
@@ -114,6 +114,7 @@ exports.handler = async (event) => {
     return err(headers, 400, "Invalid JSON in request body");
   }
 
+  // Minimal required fields
   const missing = ["fullName", "email", "consent"].filter(
     (f) => !required(data[f])
   );
@@ -134,13 +135,14 @@ exports.handler = async (event) => {
     source_link: data.source_link || data.source || "",
   };
 
-  const emailResult = await maybeSendEmail(payload);
+  const email = await maybeSendEmail(payload);
 
   return ok(headers, {
     diagnostics: {
       origin,
       allowedOrigin: headers["Access-Control-Allow-Origin"],
-      email: emailResult,
+      email,
     },
   });
 };
+EOF;
