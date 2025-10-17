@@ -8,7 +8,7 @@ sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 const ALLOWED_ORIGINS = new Set([
   "https://seventattoolv.com",
   "https://www.seventattoolv.com",
-  "https://seventattoolv.myshopify.com", // add this line
+  "https://seventattoolv.myshopify.com", // allow Shopify preview/editor
 ]);
 
 // --- CORS helpers (echo requested headers so preflight always passes) ---
@@ -26,8 +26,9 @@ function corsHeaders(origin, req) {
 export default async (req, context) => {
   const method = (req.method || "GET").toUpperCase();
   const origin = req.headers.get("origin") || "";
+  console.log("Incoming Origin:", origin); // 👈 Debug line for CORS tracing
   const isAllowed = ALLOWED_ORIGINS.has(origin);
-  const allowOrigin = isAllowed ? origin : origin || "*"; // echo origin so errors are readable
+  const allowOrigin = isAllowed ? origin : origin || "*"; // echo back the origin
 
   // OPTIONS preflight — always reply with readable CORS headers
   if (method === "OPTIONS") {
@@ -48,7 +49,7 @@ export default async (req, context) => {
     );
   }
 
-  // Unknown origins: return JSON 403 (not a CORS network error)
+  // Unknown origins: readable JSON instead of CORS block
   if (!isAllowed) {
     return new Response(
       JSON.stringify({ ok: false, error: `Origin not allowed: ${origin}` }),
@@ -70,7 +71,7 @@ export default async (req, context) => {
     });
   }
 
-  // Honeypot: if bots filled `website`, fake success (no email)
+  // Honeypot: if bots filled `website`, fake success
   if (body.website && String(body.website).trim() !== "") {
     return new Response(JSON.stringify({ ok: true, bot: true }), {
       status: 200,
@@ -78,7 +79,7 @@ export default async (req, context) => {
     });
   }
 
-  // Extract fields (mirror your frontend)
+  // Extract fields (mirror frontend)
   const {
     meaning = "",
     vision = "", // REQUIRED, 4k max
@@ -93,7 +94,7 @@ export default async (req, context) => {
     source_link = "",
   } = body || {};
 
-  // Basic validation
+  // Validation
   const missing = [];
   if (!meaning.trim()) missing.push("Meaning");
   if (!vision.trim()) missing.push("Vision");
