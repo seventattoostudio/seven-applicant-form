@@ -1,214 +1,187 @@
+// Seven Tattoo — Hidden Booking Intake (CORS safe + SendGrid)
 // netlify/functions/submit-booking-2-0.js
-// Seven Tattoo — Booking Intake (robust CORS + safe honeypot + diagnostics + SendGrid)
-// This function sends ONLY to bookings@seventattoolv.com
 
-const sgMail = require("@sendgrid/mail");
+import sgMail from "@sendgrid/mail";
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
-/* ========= 1) CORS allowlist ========= */
-const EXACT_ORIGINS = new Set([
+// Add every storefront origin you’ll submit from
+const ALLOWED_ORIGINS = new Set([
   "https://seventattoolv.com",
   "https://www.seventattoolv.com",
-  "https://seventattoolv.myshopify.com",
-  "https://admin.shopify.com",
+  // "https://seventattoolv.myshopify.com", // add if you test on myshopify preview
+  // "https://preview-your-theme-domain.example"
 ]);
 
-function isAllowedOrigin(origin = "") {
-  try {
-    const u = new URL(origin);
-    return (
-      EXACT_ORIGINS.has(origin) ||
-      u.hostname.endsWith(".myshopify.com") ||
-      u.hostname.endsWith(".shopify.com")
-    );
-  } catch {
-    return false;
-  }
-}
-
-function corsHeaders(origin = "") {
-  const allow = isAllowedOrigin(origin) ? origin : "*";
+function corsHeaders(origin) {
   return {
-    "Access-Control-Allow-Origin": allow,
-    "Access-Control-Allow-Methods": "POST,OPTIONS",
+    "Access-Control-Allow-Origin": origin || "*", // set to specific origin at runtime
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
-    "Content-Type": "application/json",
+    "Access-Control-Max-Age": "86400",
+    Vary: "Origin",
   };
 }
 
-/* ========= 2) Env / addresses ========= */
-// Keep FROM configurable via env; TO is hard-coded for this form only.
-const SENDGRID_KEY = process.env.SENDGRID_API_KEY || process.env.SENDGRID || "";
-const FROM_EMAIL =
-  process.env.FROM_EMAIL ||
-  process.env.SEND_FROM ||
-  "no-reply@seventattoolv.com";
+export default async (req, context) => {
+  const method = req.method.toUpperCase();
+  const origin = req.headers.get("origin") || "";
+  console.log("Incoming Origin:", origin);
 
-// >>> Only this hidden booking form goes to bookings@ <<<
-const TO_EMAIL = "bookings@seventattoolv.com";
-
-if (SENDGRID_KEY) sgMail.setApiKey(SENDGRID_KEY);
-
-/* ========= 3) Handler ========= */
-exports.handler = async (event) => {
-  // Preflight
-  if (event.httpMethod === "OPTIONS") {
-    return {
-      statusCode: 200,
-      headers: corsHeaders(event.headers.origin),
-      body: "",
-    };
-  }
-  if (event.httpMethod !== "POST") {
-    return {
-      statusCode: 405,
-      headers: corsHeaders(event.headers.origin),
-      body: JSON.stringify({ ok: false, message: "Method not allowed" }),
-    };
+  // OPTIONS preflight
+  if (method === "OPTIONS") {
+    const allow = ALLOWED_ORIGINS.has(origin) ? origin : "";
+    return new Response("", { status: 204, headers: corsHeaders(allow) });
   }
 
-  // Parse body
-  let body = {};
+  if (method !== "POST") {
+    return new Response(
+      JSON.stringify({ ok: false, error: "Method not allowed" }),
+      {
+        status: 405,
+        headers: corsHeaders(ALLOWED_ORIGINS.has(origin) ? origin : ""),
+      }
+    );
+  }
+
+  // Check origin
+  const allowOrigin = ALLOWED_ORIGINS.has(origin) ? origin : "";
+  if (!allowOrigin) {
+    return new Response(
+      JSON.stringify({ ok: false, error: `Origin not allowed: ${origin}` }),
+      {
+        status: 403,
+        headers: corsHeaders(allowOrigin),
+      }
+    );
+  }
+
+  // Parse JSON payload
+  let body;
   try {
-    body = JSON.parse(event.body || "{}");
+    body = await req.json();
   } catch {
-    return {
-      statusCode: 400,
-      headers: corsHeaders(event.headers.origin),
-      body: JSON.stringify({ ok: false, message: "Invalid JSON" }),
-    };
+    return new Response(JSON.stringify({ ok: false, error: "Invalid JSON" }), {
+      status: 400,
+      headers: corsHeaders(allowOrigin),
+    });
   }
 
-  // Honeypot (only treat as spam if it looks like a real URL)
-  const hp = String(body.website || "").trim();
-  if (hp && /https?:\/\//i.test(hp)) {
-    return {
-      statusCode: 200,
-      headers: corsHeaders(event.headers.origin),
-      body: JSON.stringify({ ok: true, skipped: "honeypot" }),
-    };
+  // Honeypot: if bots filled `website`, fake success (no email)
+  if (body.website && String(body.website).trim() !== "") {
+    return new Response(JSON.stringify({ ok: true, bot: true }), {
+      status: 200,
+      headers: corsHeaders(allowOrigin),
+    });
   }
 
-  // Validate required fields
-  const errors = [];
-  const req = (k, label = k) => {
-    if (!body[k] || String(body[k]).trim() === "")
-      errors.push(`${label} is required`);
-  };
-  req("meaning", "Meaning behind the piece");
-  req("fullName", "Full name");
-  req("email", "Email");
-  req("phone", "Phone number");
-  req("placement", "Placement");
-  req("scale", "Scale");
-  req("hear", "How did you hear about us");
-  if (!body.consent) errors.push("Consent checkbox must be checked");
+  // Extract fields
+  const {
+    meaning = "",
+    fullName = "",
+    email = "",
+    phone = "",
+    placement = "",
+    scale = "",
+    hear = "",
+    consent = false,
+    artist = "",
+    source_link = "",
+  } = body || {};
 
-  if (errors.length) {
-    return {
-      statusCode: 400,
-      headers: corsHeaders(event.headers.origin),
-      body: JSON.stringify({ ok: false, errors }),
-    };
+  // Basic validation
+  const missing = [];
+  if (!meaning.trim()) missing.push("Meaning");
+  if (!fullName.trim()) missing.push("Full name");
+  if (!email.trim()) missing.push("Email");
+  if (!phone.trim()) missing.push("Phone");
+  if (!placement.trim()) missing.push("Placement");
+  if (!scale.trim()) missing.push("Scale");
+  if (!hear.trim()) missing.push("How did you hear about us");
+  if (!consent) missing.push("Review consent");
+
+  if (missing.length) {
+    return new Response(
+      JSON.stringify({ ok: false, error: "Missing: " + missing.join(", ") }),
+      {
+        status: 400,
+        headers: corsHeaders(allowOrigin),
+      }
+    );
   }
 
   // Compose email
-  const submittedAt = new Date().toISOString();
-  const artist = String(body.artist || "").trim();
-  const sourceLink = String(body.source_link || "").trim();
+  const toEmail = "bookings@seventattoolv.com";
+  const subject = `Booking Intake — ${fullName} (${scale}, ${placement})`;
+  const text = [
+    `Meaning: ${meaning}`,
+    `Full name: ${fullName}`,
+    `Email: ${email}`,
+    `Phone: ${phone}`,
+    `Placement: ${placement}`,
+    `Scale: ${scale}`,
+    `Heard via: ${hear}`,
+    `Consent: ${consent ? "Yes" : "No"}`,
+    `Artist: ${artist || "(not specified)"}`,
+    `Source: ${source_link || "(none)"}`,
+  ].join("\n");
 
-  const subject = `Booking Intake — ${body.fullName} (${body.scale}, ${body.placement})`;
   const html = `
-    <div style="font:14px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;color:#111;">
-      <h2 style="margin:0 0 12px;">Seven Tattoo — Booking Intake</h2>
-      <p><strong>Submitted:</strong> ${submittedAt}</p>
-      <table cellpadding="6" cellspacing="0" style="border-collapse:collapse;">
-        <tr><td><strong>Meaning</strong></td><td>${escapeHtml(
-          body.meaning
-        )}</td></tr>
-        <tr><td><strong>Full Name</strong></td><td>${escapeHtml(
-          body.fullName
-        )}</td></tr>
-        <tr><td><strong>Email</strong></td><td>${escapeHtml(
-          body.email
-        )}</td></tr>
-        <tr><td><strong>Phone</strong></td><td>${escapeHtml(
-          body.phone
-        )}</td></tr>
-        <tr><td><strong>Placement</strong></td><td>${escapeHtml(
-          body.placement
-        )}</td></tr>
-        <tr><td><strong>Scale</strong></td><td>${escapeHtml(
-          body.scale
-        )}</td></tr>
-        <tr><td><strong>Heard About Us</strong></td><td>${escapeHtml(
-          body.hear
-        )}</td></tr>
-        <tr><td><strong>Artist (param)</strong></td><td>${escapeHtml(
-          artist || "(none)"
-        )}</td></tr>
-        <tr><td><strong>Source Link</strong></td><td>${
-          sourceLink
-            ? `<a href="${escapeAttr(sourceLink)}">${escapeHtml(
-                sourceLink
-              )}</a>`
-            : "(none)"
-        }</td></tr>
-      </table>
-    </div>
+    <h2>Hidden Booking Intake</h2>
+    <p><strong>Meaning:</strong> ${escapeHtml(meaning)}</p>
+    <p><strong>Full name:</strong> ${escapeHtml(fullName)}</p>
+    <p><strong>Email:</strong> ${escapeHtml(email)}</p>
+    <p><strong>Phone:</strong> ${escapeHtml(phone)}</p>
+    <p><strong>Placement:</strong> ${escapeHtml(placement)}</p>
+    <p><strong>Scale:</strong> ${escapeHtml(scale)}</p>
+    <p><strong>Heard via:</strong> ${escapeHtml(hear)}</p>
+    <p><strong>Consent:</strong> ${consent ? "Yes" : "No"}</p>
+    <p><strong>Artist:</strong> ${escapeHtml(artist || "(not specified)")}</p>
+    <p><strong>Source:</strong> <a href="${escapeAttr(
+      source_link
+    )}">${escapeHtml(source_link || "")}</a></p>
   `;
 
-  const msg = {
-    to: TO_EMAIL,
-    from: { email: FROM_EMAIL, name: "Seven Tattoo" },
-    subject,
-    html,
-  };
-
-  // Send
-  let attemptedSend = false,
-    sgStatus = null,
-    sgError = null;
   try {
-    if (!SENDGRID_KEY) throw new Error("Missing SENDGRID_API_KEY");
-    attemptedSend = true;
-    const sgRes = await sgMail.send(msg);
-    sgStatus = sgRes?.[0]?.statusCode || null;
-  } catch (e) {
-    sgError = e.message || String(e);
-    console.error("SendGrid error:", e);
+    await sgMail.send({
+      to: toEmail,
+      from: {
+        email: "no-reply@seventattoolv.com",
+        name: "Seven Tattoo Studio",
+      }, // verified sender/domain
+      replyTo: { email, name: fullName },
+      subject,
+      text,
+      html,
+    });
+
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: corsHeaders(allowOrigin),
+    });
+  } catch (err) {
+    console.error(
+      "SendGrid error:",
+      err?.response?.body || err?.message || err
+    );
+    const msg =
+      err?.response?.body?.errors?.[0]?.message ||
+      err?.message ||
+      "Email send failed";
+    return new Response(JSON.stringify({ ok: false, error: msg }), {
+      status: 500,
+      headers: corsHeaders(allowOrigin),
+    });
   }
-
-  const ok = sgStatus && sgStatus >= 200 && sgStatus < 300;
-
-  return {
-    statusCode: ok ? 200 : 500,
-    headers: corsHeaders(event.headers.origin),
-    body: JSON.stringify({
-      ok,
-      diagnostics: {
-        origin: event.headers.origin || null,
-        allowed: isAllowedOrigin(event.headers.origin || ""),
-        haveKey: !!SENDGRID_KEY,
-        to: TO_EMAIL,
-        from: FROM_EMAIL,
-        attemptedSend,
-        sendgridStatus: sgStatus,
-        sendgridError: sgError,
-      },
-    }),
-  };
 };
 
-/* ========= 4) Helpers ========= */
-function escapeHtml(s = "") {
-  return String(s).replace(
-    /[&<>"']/g,
-    (m) =>
-      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[
-        m
-      ])
-  );
+function escapeHtml(str = "") {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
-function escapeAttr(s = "") {
-  return String(s).replace(/"/g, "&quot;");
+function escapeAttr(str = "") {
+  return escapeHtml(str).replace(/"/g, "&quot;");
 }
