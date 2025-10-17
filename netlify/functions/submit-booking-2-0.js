@@ -1,215 +1,146 @@
-// Seven Tattoo — Hidden Booking Intake (CORS safe + SendGrid)
 // netlify/functions/submit-booking-2-0.js
+// Classic Functions (CJS) + CORS; avoid 204 to dodge undici bug.
 
-import sgMail from "@sendgrid/mail";
-sgMail.setApiKey(process.env.SENDGRID_API_KEY);
-
-// If you want to re-lock later, put your exact origins here and set ENFORCE_ORIGIN = true
-const ALLOWED_ORIGINS = new Set([
+const ALLOWLIST = [
   "https://seventattoolv.com",
   "https://www.seventattoolv.com",
   "https://seventattoolv.myshopify.com",
-]);
+  "https://frolicking-sundae-64ec36.netlify.app",
+];
 
-// 🚨 TEMP: make CORS permissive so the browser never throws "Network error"
-const ENFORCE_ORIGIN = false;
+function pickAllowedOrigin(reqOrigin = "") {
+  return ALLOWLIST.includes(reqOrigin)
+    ? reqOrigin
+    : "https://frolicking-sundae-64ec36.netlify.app";
+}
 
-// --- CORS helpers (echo requested headers so preflight always passes) ---
-function corsHeaders(origin, req) {
-  const reqHeaders = req?.headers?.get("access-control-request-headers");
+function corsHeaders(origin) {
   return {
-    "Access-Control-Allow-Origin": origin || "*",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": reqHeaders || "Content-Type, Accept",
-    "Access-Control-Max-Age": "86400",
-    Vary: "Origin, Access-Control-Request-Headers",
+    "Access-Control-Allow-Origin": pickAllowedOrigin(origin),
+    "Access-Control-Allow-Methods": "POST,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Max-Age": "600",
+    "Access-Control-Allow-Credentials": "false",
+    Vary: "Origin",
+    "Content-Type": "application/json; charset=utf-8",
   };
 }
 
-export default async (req, context) => {
-  const method = (req.method || "GET").toUpperCase();
-  const origin = req.headers.get("origin") || "";
-  console.log("Incoming Origin:", origin);
+function ok(headers, body = {}) {
+  return {
+    statusCode: 200,
+    headers,
+    body: JSON.stringify({ ok: true, ...body }),
+  };
+}
 
-  // If enforcing, only allow in our set; otherwise allow everyone (for debug)
-  const isAllowed = ALLOWED_ORIGINS.has(origin) || !ENFORCE_ORIGIN;
-  const allowOrigin = isAllowed ? origin || "*" : origin || "*";
+function err(headers, code, message, more = {}) {
+  return {
+    statusCode: code,
+    headers,
+    body: JSON.stringify({ ok: false, error: message, ...more }),
+  };
+}
 
-  // OPTIONS preflight — always reply with readable CORS headers
-  if (method === "OPTIONS") {
-    return new Response("", {
-      status: 204,
-      headers: corsHeaders(allowOrigin, req),
-    });
-  }
+function required(v) {
+  return v !== undefined && v !== null && String(v).trim() !== "";
+}
 
-  if (method !== "POST") {
-    return new Response(
-      JSON.stringify({ ok: false, error: "Method not allowed" }),
-      {
-        status: 405,
-        headers: corsHeaders(allowOrigin, req),
-      }
-    );
-  }
+// OPTIONAL email via SendGrid (enable env vars SENDGRID_API_KEY, BOOKING_TO, BOOKING_FROM)
+async function maybeSendEmail(payload) {
+  const key = process.env.SENDGRID_API_KEY;
+  const to = process.env.BOOKING_TO;
+  const from = process.env.BOOKING_FROM;
+  if (!key || !to || !from)
+    return { sent: false, reason: "Email disabled (missing env vars)" };
 
-  if (!isAllowed) {
-    return new Response(
-      JSON.stringify({ ok: false, error: `Origin not allowed: ${origin}` }),
-      {
-        status: 403,
-        headers: corsHeaders(allowOrigin, req),
-      }
-    );
-  }
+  const sgMail = await import("@sendgrid/mail").then((m) => m.default);
+  sgMail.setApiKey(key);
 
-  // Parse JSON payload
-  let body;
-  try {
-    body = await req.json();
-  } catch {
-    return new Response(JSON.stringify({ ok: false, error: "Invalid JSON" }), {
-      status: 400,
-      headers: corsHeaders(allowOrigin, req),
-    });
-  }
-
-  // Honeypot: if bots filled `website`, fake success (no email)
-  if (body.website && String(body.website).trim() !== "") {
-    return new Response(JSON.stringify({ ok: true, bot: true }), {
-      status: 200,
-      headers: corsHeaders(allowOrigin, req),
-    });
-  }
-
-  // Extract fields (mirror frontend)
-  const {
-    meaning = "",
-    vision = "", // REQUIRED, 4k max
-    fullName = "",
-    email = "",
-    phone = "",
-    placement = "",
-    scale = "",
-    hear = "",
-    consent = false,
-    artist = "",
-    source_link = "",
-  } = body || {};
-
-  // Validation
-  const missing = [];
-  if (!meaning.trim()) missing.push("Meaning");
-  if (!vision.trim()) missing.push("Vision");
-  if (!fullName.trim()) missing.push("Full name");
-  if (!email.trim()) missing.push("Email");
-  if (!phone.trim()) missing.push("Phone");
-  if (!placement.trim()) missing.push("Placement");
-  if (!scale.trim()) missing.push("Scale");
-  if (!hear.trim()) missing.push("How did you hear about us");
-  if (!consent) missing.push("Review consent");
-
-  if (missing.length) {
-    return new Response(
-      JSON.stringify({ ok: false, error: "Missing: " + missing.join(", ") }),
-      { status: 400, headers: corsHeaders(allowOrigin, req) }
-    );
-  }
-
-  if (vision && vision.length > 4000) {
-    return new Response(
-      JSON.stringify({
-        ok: false,
-        error: "Vision must be 4,000 characters or fewer.",
-      }),
-      { status: 400, headers: corsHeaders(allowOrigin, req) }
-    );
-  }
-
-  // Compose email
-  const submittedIso = new Date().toISOString();
-  const toEmail = "bookings@seventattoolv.com";
-  const subject = `Booking Intake — ${fullName} (${scale}, ${placement})`;
-
-  const text = [
-    `Seven Tattoo — Booking Intake`,
-    ``,
-    `Submitted: ${submittedIso}`,
-    `Meaning: ${meaning}`,
-    `Vision: ${vision}`,
-    `Full Name: ${fullName}`,
-    `Email: ${email}`,
-    `Phone: ${phone}`,
-    `Placement: ${placement}`,
-    `Scale: ${scale}`,
-    `Heard About Us: ${hear}`,
-    `Consent: ${consent ? "Yes" : "No"}`,
-    `Artist (param): ${artist || "(not specified)"}`,
-    `Source Link: ${source_link || "(none)"}`,
-  ].join("\n");
-
-  const html = `
-    <h2>Seven Tattoo — Booking Intake</h2>
-    <p><strong>Submitted:</strong> ${submittedIso}</p>
-    <p><strong>Meaning:</strong> ${escapeHtml(meaning)}</p>
-    <p><strong>Vision:</strong> ${escapeHtml(vision)}</p>
-    <p><strong>Full Name:</strong> ${escapeHtml(fullName)}</p>
-    <p><strong>Email:</strong> ${escapeHtml(email)}</p>
-    <p><strong>Phone:</strong> ${escapeHtml(phone)}</p>
-    <p><strong>Placement:</strong> ${escapeHtml(placement)}</p>
-    <p><strong>Scale:</strong> ${escapeHtml(scale)}</p>
-    <p><strong>Heard About Us:</strong> ${escapeHtml(hear)}</p>
-    <p><strong>Consent:</strong> ${consent ? "Yes" : "No"}</p>
-    <p><strong>Artist (param):</strong> ${escapeHtml(
-      artist || "(not specified)"
-    )}</p>
-    <p><strong>Source Link:</strong> <a href="${escapeAttr(
-      source_link
-    )}">${escapeHtml(source_link || "")}</a></p>
-  `;
+  const subject = `Booking Intake – ${payload.fullName || "New Lead"}`;
+  const lines = [
+    `Name: ${payload.fullName || "(not provided)"}`,
+    `Email: ${payload.email || "(not provided)"}`,
+    `Phone: ${payload.phone || "(not provided)"}`,
+    `Placement: ${payload.placement || "(not provided)"}`,
+    `Scale: ${payload.scale || "(not provided)"}`,
+    `Heard via: ${payload.hear || "(not provided)"}`,
+    `Artist: ${payload.artist || "(not provided)"}`,
+    `Consent: ${payload.consent ? "Yes" : "No"}`,
+    `Meaning: ${payload.meaning || "(not provided)"}`,
+    `Vision: ${payload.vision || "(not provided)"}`,
+    `Source Link: ${payload.source_link || "(not provided)"}`,
+  ];
 
   try {
     await sgMail.send({
-      to: toEmail,
-      from: {
-        email: "no-reply@seventattoolv.com",
-        name: "Seven Tattoo Studio",
-      },
-      replyTo: { email, name: fullName },
+      to,
+      from,
       subject,
-      text,
-      html,
+      text: lines.join("\n"),
+      html: `<pre style="font:14px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">${lines.join(
+        "\n"
+      )}</pre>`,
     });
-
-    return new Response(JSON.stringify({ ok: true }), {
-      status: 200,
-      headers: corsHeaders(allowOrigin, req),
-    });
-  } catch (err) {
-    const msg =
-      err?.response?.body?.errors?.[0]?.message ||
-      err?.message ||
-      "Email send failed";
-    console.error(
-      "SendGrid error:",
-      err?.response?.body || err?.message || err
-    );
-    return new Response(JSON.stringify({ ok: false, error: msg }), {
-      status: 500,
-      headers: corsHeaders(allowOrigin, req),
-    });
+    return { sent: true };
+  } catch (e) {
+    return { sent: false, reason: String(e?.response?.body || e.message || e) };
   }
-};
+}
 
-// --- helpers ---
-function escapeHtml(str = "") {
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#039;");
-}
-function escapeAttr(str = "") {
-  return escapeHtml(str).replace(/"/g, "&quot;");
-}
+exports.handler = async (event) => {
+  const origin = event.headers?.origin || "";
+  const headers = corsHeaders(origin);
+
+  // IMPORTANT: return 200 (not 204) for preflight to avoid undici/Response bug.
+  if (event.httpMethod === "OPTIONS") {
+    return { statusCode: 200, headers, body: "" };
+  }
+
+  if (event.httpMethod !== "POST") {
+    return err(headers, 405, "Method Not Allowed");
+  }
+
+  const ct =
+    event.headers["content-type"] || event.headers["Content-Type"] || "";
+  if (!ct.toLowerCase().includes("application/json")) {
+    return err(headers, 415, "Unsupported Media Type – use application/json");
+  }
+
+  let data;
+  try {
+    data = JSON.parse(event.body || "{}");
+  } catch {
+    return err(headers, 400, "Invalid JSON in request body");
+  }
+
+  const missing = ["fullName", "email", "consent"].filter(
+    (f) => !required(data[f])
+  );
+  if (missing.length)
+    return err(headers, 422, "Missing required fields", { missing });
+
+  const payload = {
+    meaning: data.meaning || "",
+    vision: data.vision || "",
+    fullName: data.fullName || "",
+    email: data.email || "",
+    phone: data.phone || "",
+    placement: data.placement || "",
+    scale: data.scale || "",
+    hear: data.hear || "",
+    consent: !!data.consent,
+    artist: data.artist || "",
+    source_link: data.source_link || data.source || "",
+  };
+
+  const emailResult = await maybeSendEmail(payload);
+
+  return ok(headers, {
+    diagnostics: {
+      origin,
+      allowedOrigin: headers["Access-Control-Allow-Origin"],
+      email: emailResult,
+    },
+  });
+};
