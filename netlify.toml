@@ -6,9 +6,3 @@
 [build]
   command = "echo Build step not required"
   publish = "dist"
-
-[[redirects]]
-from = "/.netlify/functions/submit-booking"
-to = "/.netlify/functions/submit-booking-2-0"
-status = 200
-force = true
