@@ -27,7 +27,7 @@ export default async (req, context) => {
   const origin = req.headers.get("origin") || "";
   console.log("Incoming Origin:", origin);
 
-  // OPTIONS preflight
+  // Preflight
   if (method === "OPTIONS") {
     const allow = ALLOWED_ORIGINS.has(origin) ? origin : "";
     return new Response("", { status: 204, headers: corsHeaders(allow) });
@@ -55,7 +55,7 @@ export default async (req, context) => {
     );
   }
 
-  // Parse JSON payload
+  // Parse JSON
   let body;
   try {
     body = await req.json();
@@ -74,7 +74,7 @@ export default async (req, context) => {
     });
   }
 
-  // Extract fields
+  // Extract fields (mirror frontend)
   const {
     meaning = "",
     vision = "", // NEW
@@ -89,10 +89,10 @@ export default async (req, context) => {
     source_link = "",
   } = body || {};
 
-  // Basic validation
+  // Validation
   const missing = [];
   if (!meaning.trim()) missing.push("Meaning");
-  if (!vision.trim()) missing.push("Vision"); // NEW (required)
+  if (!vision.trim()) missing.push("Vision"); // required
   if (!fullName.trim()) missing.push("Full name");
   if (!email.trim()) missing.push("Email");
   if (!phone.trim()) missing.push("Phone");
@@ -118,42 +118,50 @@ export default async (req, context) => {
     );
   }
 
-  // Compose email
+  // Email content
+  const submittedIso = new Date().toISOString();
   const toEmail = "bookings@seventattoolv.com";
   const subject = `Booking Intake — ${fullName} (${scale}, ${placement})`;
+
   const text = [
+    `Seven Tattoo — Booking Intake`,
+    ``,
+    `Submitted: ${submittedIso}`,
     `Meaning: ${meaning}`,
     `Vision: ${vision}`, // NEW
-    `Full name: ${fullName}`,
+    `Full Name: ${fullName}`,
     `Email: ${email}`,
     `Phone: ${phone}`,
     `Placement: ${placement}`,
     `Scale: ${scale}`,
-    `Heard via: ${hear}`,
+    `Heard About Us: ${hear}`,
     `Consent: ${consent ? "Yes" : "No"}`,
-    `Artist: ${artist || "(not specified)"}`,
-    `Source: ${source_link || "(none)"}`,
+    `Artist (param): ${artist || "(not specified)"}`,
+    `Source Link: ${source_link || "(none)"}`,
   ].join("\n");
 
   const html = `
-    <h2>Hidden Booking Intake</h2>
+    <h2>Seven Tattoo — Booking Intake</h2>
+    <p><strong>Submitted:</strong> ${submittedIso}</p>
     <p><strong>Meaning:</strong> ${escapeHtml(meaning)}</p>
     <p><strong>Vision:</strong> ${escapeHtml(vision)}</p>
-    <p><strong>Full name:</strong> ${escapeHtml(fullName)}</p>
+    <p><strong>Full Name:</strong> ${escapeHtml(fullName)}</p>
     <p><strong>Email:</strong> ${escapeHtml(email)}</p>
     <p><strong>Phone:</strong> ${escapeHtml(phone)}</p>
     <p><strong>Placement:</strong> ${escapeHtml(placement)}</p>
     <p><strong>Scale:</strong> ${escapeHtml(scale)}</p>
-    <p><strong>Heard via:</strong> ${escapeHtml(hear)}</p>
+    <p><strong>Heard About Us:</strong> ${escapeHtml(hear)}</p>
     <p><strong>Consent:</strong> ${consent ? "Yes" : "No"}</p>
-    <p><strong>Artist:</strong> ${escapeHtml(artist || "(not specified)")}</p>
-    <p><strong>Source:</strong> <a href="${escapeAttr(
+    <p><strong>Artist (param):</strong> ${escapeHtml(
+      artist || "(not specified)"
+    )}</p>
+    <p><strong>Source Link:</strong> <a href="${escapeAttr(
       source_link
     )}">${escapeHtml(source_link || "")}</a></p>
   `;
 
   try {
-    await sgMail.send({
+    const resp = await sgMail.send({
       to: toEmail,
       from: {
         email: "no-reply@seventattoolv.com",
