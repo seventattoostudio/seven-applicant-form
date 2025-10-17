@@ -8,13 +8,13 @@ sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 const ALLOWED_ORIGINS = new Set([
   "https://seventattoolv.com",
   "https://www.seventattoolv.com",
-  // "https://seventattoolv.myshopify.com", // add if you test on myshopify preview
+  // "https://seventattoolv.myshopify.com", // add if testing on myshopify preview
   // "https://preview-your-theme-domain.example"
 ]);
 
 function corsHeaders(origin) {
   return {
-    "Access-Control-Allow-Origin": origin || "*", // set to specific origin at runtime
+    "Access-Control-Allow-Origin": origin || "*",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
     "Access-Control-Max-Age": "86400",
@@ -77,6 +77,7 @@ export default async (req, context) => {
   // Extract fields
   const {
     meaning = "",
+    vision = "", // NEW
     fullName = "",
     email = "",
     phone = "",
@@ -91,6 +92,7 @@ export default async (req, context) => {
   // Basic validation
   const missing = [];
   if (!meaning.trim()) missing.push("Meaning");
+  if (!vision.trim()) missing.push("Vision"); // NEW (required)
   if (!fullName.trim()) missing.push("Full name");
   if (!email.trim()) missing.push("Email");
   if (!phone.trim()) missing.push("Phone");
@@ -102,10 +104,17 @@ export default async (req, context) => {
   if (missing.length) {
     return new Response(
       JSON.stringify({ ok: false, error: "Missing: " + missing.join(", ") }),
-      {
-        status: 400,
-        headers: corsHeaders(allowOrigin),
-      }
+      { status: 400, headers: corsHeaders(allowOrigin) }
+    );
+  }
+
+  if (vision && vision.length > 4000) {
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        error: "Vision must be 4,000 characters or fewer.",
+      }),
+      { status: 400, headers: corsHeaders(allowOrigin) }
     );
   }
 
@@ -114,6 +123,7 @@ export default async (req, context) => {
   const subject = `Booking Intake — ${fullName} (${scale}, ${placement})`;
   const text = [
     `Meaning: ${meaning}`,
+    `Vision: ${vision}`, // NEW
     `Full name: ${fullName}`,
     `Email: ${email}`,
     `Phone: ${phone}`,
@@ -128,6 +138,7 @@ export default async (req, context) => {
   const html = `
     <h2>Hidden Booking Intake</h2>
     <p><strong>Meaning:</strong> ${escapeHtml(meaning)}</p>
+    <p><strong>Vision:</strong> ${escapeHtml(vision)}</p>
     <p><strong>Full name:</strong> ${escapeHtml(fullName)}</p>
     <p><strong>Email:</strong> ${escapeHtml(email)}</p>
     <p><strong>Phone:</strong> ${escapeHtml(phone)}</p>
