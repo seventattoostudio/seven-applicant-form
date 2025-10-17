@@ -4,12 +4,15 @@
 import sgMail from "@sendgrid/mail";
 sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
-// Add every storefront origin you’ll submit from
+// If you want to re-lock later, put your exact origins here and set ENFORCE_ORIGIN = true
 const ALLOWED_ORIGINS = new Set([
   "https://seventattoolv.com",
   "https://www.seventattoolv.com",
-  "https://seventattoolv.myshopify.com", // allow Shopify preview/editor
+  "https://seventattoolv.myshopify.com",
 ]);
+
+// 🚨 TEMP: make CORS permissive so the browser never throws "Network error"
+const ENFORCE_ORIGIN = false;
 
 // --- CORS helpers (echo requested headers so preflight always passes) ---
 function corsHeaders(origin, req) {
@@ -26,9 +29,11 @@ function corsHeaders(origin, req) {
 export default async (req, context) => {
   const method = (req.method || "GET").toUpperCase();
   const origin = req.headers.get("origin") || "";
-  console.log("Incoming Origin:", origin); // 👈 Debug line for CORS tracing
-  const isAllowed = ALLOWED_ORIGINS.has(origin);
-  const allowOrigin = isAllowed ? origin : origin || "*"; // echo back the origin
+  console.log("Incoming Origin:", origin);
+
+  // If enforcing, only allow in our set; otherwise allow everyone (for debug)
+  const isAllowed = ALLOWED_ORIGINS.has(origin) || !ENFORCE_ORIGIN;
+  const allowOrigin = isAllowed ? origin || "*" : origin || "*";
 
   // OPTIONS preflight — always reply with readable CORS headers
   if (method === "OPTIONS") {
@@ -38,7 +43,6 @@ export default async (req, context) => {
     });
   }
 
-  // Only POST is allowed
   if (method !== "POST") {
     return new Response(
       JSON.stringify({ ok: false, error: "Method not allowed" }),
@@ -49,7 +53,6 @@ export default async (req, context) => {
     );
   }
 
-  // Unknown origins: readable JSON instead of CORS block
   if (!isAllowed) {
     return new Response(
       JSON.stringify({ ok: false, error: `Origin not allowed: ${origin}` }),
@@ -71,7 +74,7 @@ export default async (req, context) => {
     });
   }
 
-  // Honeypot: if bots filled `website`, fake success
+  // Honeypot: if bots filled `website`, fake success (no email)
   if (body.website && String(body.website).trim() !== "") {
     return new Response(JSON.stringify({ ok: true, bot: true }), {
       status: 200,
@@ -171,7 +174,7 @@ export default async (req, context) => {
       from: {
         email: "no-reply@seventattoolv.com",
         name: "Seven Tattoo Studio",
-      }, // verified sender/domain
+      },
       replyTo: { email, name: fullName },
       subject,
       text,
