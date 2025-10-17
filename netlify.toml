@@ -1,10 +1,14 @@
+[functions]
+  node_bundler = "esbuild"
+  external_node_modules = ["@sendgrid/mail"]
+  directory = "netlify/functions"
+
 [build]
-  functions = "netlify/functions"
+  command = "echo Build step not required"
+  publish = "dist"
 
-[build.environment]
-  NODE_VERSION = "18"
-
-[dev]
-  functions = "netlify/functions"
-
-
+[[redirects]]
+from = "/.netlify/functions/submit-booking"
+to = "/.netlify/functions/submit-booking-2-0"
+status = 200
+force = true
