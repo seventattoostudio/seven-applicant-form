@@ -1,5 +1,4 @@
-cat > (netlify / functions / submit - booking - intake.cjs) << "EOF";
-// netlify/functions/submit-booking-2-0.cjs  (CommonJS)
+// netlify/functions/submit-booking-intake.cjs  (CommonJS)
 
 // ----- CORS -----
 const ALLOWLIST = [
@@ -145,4 +144,3 @@ exports.handler = async (event) => {
     },
   });
 };
-EOF;
