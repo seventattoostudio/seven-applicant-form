@@ -12,14 +12,15 @@ const ALLOWED_ORIGINS = new Set([
   // "https://preview-your-theme-domain.example"
 ]);
 
-function corsHeaders(origin) {
-  // Always return readable CORS headers (never empty string)
+// --- CORS helpers (echo requested headers so preflight always passes) ---
+function corsHeaders(origin, req) {
+  const reqHeaders = req?.headers?.get("access-control-request-headers");
   return {
     "Access-Control-Allow-Origin": origin || "*",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": reqHeaders || "Content-Type, Accept",
     "Access-Control-Max-Age": "86400",
-    Vary: "Origin",
+    Vary: "Origin, Access-Control-Request-Headers",
   };
 }
 
@@ -27,42 +28,46 @@ export default async (req, context) => {
   const method = (req.method || "GET").toUpperCase();
   const origin = req.headers.get("origin") || "";
   const isAllowed = ALLOWED_ORIGINS.has(origin);
-  const allowOrigin = isAllowed ? origin : origin || "*"; // echo back so errors are readable
+  const allowOrigin = isAllowed ? origin : origin || "*"; // echo origin so errors are readable
 
-  // OPTIONS preflight
+  // OPTIONS preflight — always reply with readable CORS headers
   if (method === "OPTIONS") {
-    return new Response("", { status: 204, headers: corsHeaders(allowOrigin) });
+    return new Response("", {
+      status: 204,
+      headers: corsHeaders(allowOrigin, req),
+    });
   }
 
+  // Only POST is allowed
   if (method !== "POST") {
     return new Response(
       JSON.stringify({ ok: false, error: "Method not allowed" }),
       {
         status: 405,
-        headers: corsHeaders(allowOrigin),
+        headers: corsHeaders(allowOrigin, req),
       }
     );
   }
 
-  // Hard fail for unknown origins, but still return readable JSON (no browser CORS block)
+  // Unknown origins: return JSON 403 (not a CORS network error)
   if (!isAllowed) {
     return new Response(
       JSON.stringify({ ok: false, error: `Origin not allowed: ${origin}` }),
       {
         status: 403,
-        headers: corsHeaders(allowOrigin),
+        headers: corsHeaders(allowOrigin, req),
       }
     );
   }
 
-  // Parse JSON
+  // Parse JSON payload
   let body;
   try {
     body = await req.json();
   } catch {
     return new Response(JSON.stringify({ ok: false, error: "Invalid JSON" }), {
       status: 400,
-      headers: corsHeaders(allowOrigin),
+      headers: corsHeaders(allowOrigin, req),
     });
   }
 
@@ -70,14 +75,14 @@ export default async (req, context) => {
   if (body.website && String(body.website).trim() !== "") {
     return new Response(JSON.stringify({ ok: true, bot: true }), {
       status: 200,
-      headers: corsHeaders(allowOrigin),
+      headers: corsHeaders(allowOrigin, req),
     });
   }
 
-  // Extract fields (mirror frontend)
+  // Extract fields (mirror your frontend)
   const {
     meaning = "",
-    vision = "", // NEW (required, 4k max)
+    vision = "", // REQUIRED, 4k max
     fullName = "",
     email = "",
     phone = "",
@@ -89,7 +94,7 @@ export default async (req, context) => {
     source_link = "",
   } = body || {};
 
-  // Validation
+  // Basic validation
   const missing = [];
   if (!meaning.trim()) missing.push("Meaning");
   if (!vision.trim()) missing.push("Vision");
@@ -104,7 +109,7 @@ export default async (req, context) => {
   if (missing.length) {
     return new Response(
       JSON.stringify({ ok: false, error: "Missing: " + missing.join(", ") }),
-      { status: 400, headers: corsHeaders(allowOrigin) }
+      { status: 400, headers: corsHeaders(allowOrigin, req) }
     );
   }
 
@@ -114,11 +119,11 @@ export default async (req, context) => {
         ok: false,
         error: "Vision must be 4,000 characters or fewer.",
       }),
-      { status: 400, headers: corsHeaders(allowOrigin) }
+      { status: 400, headers: corsHeaders(allowOrigin, req) }
     );
   }
 
-  // Email content
+  // Compose email
   const submittedIso = new Date().toISOString();
   const toEmail = "bookings@seventattoolv.com";
   const subject = `Booking Intake — ${fullName} (${scale}, ${placement})`;
@@ -175,7 +180,7 @@ export default async (req, context) => {
 
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,
-      headers: corsHeaders(allowOrigin),
+      headers: corsHeaders(allowOrigin, req),
     });
   } catch (err) {
     const msg =
@@ -188,11 +193,12 @@ export default async (req, context) => {
     );
     return new Response(JSON.stringify({ ok: false, error: msg }), {
       status: 500,
-      headers: corsHeaders(allowOrigin),
+      headers: corsHeaders(allowOrigin, req),
     });
   }
 };
 
+// --- helpers ---
 function escapeHtml(str = "") {
   return String(str)
     .replace(/&/g, "&amp;")
