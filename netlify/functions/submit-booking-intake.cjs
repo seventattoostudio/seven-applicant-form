@@ -7,7 +7,6 @@ const ALLOWLIST = [
   "https://seventattoolv.myshopify.com",
   "https://frolicking-sundae-64ec36.netlify.app",
 ];
-
 const pickAllowedOrigin = (origin = "") =>
   ALLOWLIST.includes(origin)
     ? origin
@@ -30,23 +29,23 @@ const ok = (headers, obj = {}) => ({
   headers,
   body: JSON.stringify({ ok: true, ...obj }),
 });
-
 const err = (headers, code, message, more = {}) => ({
   statusCode: code,
   headers,
   body: JSON.stringify({ ok: false, error: message, ...more }),
 });
-
 const isFilled = (v) =>
   v !== undefined && v !== null && String(v).trim() !== "";
 
-// ---------- Optional Email (SendGrid) ----------
+// ---------- Email (SendGrid, optional) ----------
 async function maybeSendEmail(payload) {
   const key = process.env.SENDGRID_API_KEY;
-  const to = process.env.BOOKING_TO;
-  const from = process.env.BOOKING_FROM;
+  const to = process.env.BOOKING_TO || process.env.INTERNAL_EMAIL; // fallback if you already used INTERNAL_EMAIL
+  const from =
+    process.env.BOOKING_FROM ||
+    process.env.SEND_FROM ||
+    "Seven Tattoo <no-reply@seventattoolv.com>";
 
-  // If env vars are missing, skip email gracefully
   if (!key || !to || !from) {
     return { sent: false, reason: "Email disabled (missing env vars)" };
   }
@@ -60,31 +59,90 @@ async function maybeSendEmail(payload) {
 
   sgMail.setApiKey(key);
 
-  const subject = `Booking Intake – ${payload.fullName || "New Lead"}`;
-  const lines = [
-    `Name: ${payload.fullName || "(not provided)"}`,
-    `Email: ${payload.email || "(not provided)"}`,
-    `Phone: ${payload.phone || "(not provided)"}`,
-    `Placement: ${payload.placement || "(not provided)"}`,
-    `Scale: ${payload.scale || "(not provided)"}`,
-    `Heard via: ${payload.hear || "(not provided)"}`,
-    `Artist: ${payload.artist || "(not provided)"}`,
+  const nice = (s) => (s || "").toString().trim();
+  const parts = [];
+  if (nice(payload.scale)) parts.push(payload.scale);
+  if (nice(payload.placement)) parts.push(payload.placement);
+  const subject = `Booking Intake — ${nice(payload.fullName) || "New Lead"}${
+    parts.length ? ` (${parts.join(", ")})` : ""
+  }`;
+  const esc = (s) =>
+    nice(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const submitted = new Date().toISOString();
+
+  const html = `
+      <div style="font:14px/1.55 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color:#111;">
+        <h2 style="margin:0 0 10px; font-size:20px;">Seven Tattoo — Booking Intake</h2>
+        <p style="margin:0 0 16px; color:#444;"><strong>Submitted:</strong> ${esc(
+          submitted
+        )}</p>
+  
+        <p style="margin:6px 0;"><strong>Meaning:</strong> ${
+          esc(payload.meaning) || "(not provided)"
+        }</p>
+        <p style="margin:6px 0;"><strong>Vision:</strong> ${
+          esc(payload.vision) || "(not provided)"
+        }</p>
+  
+        <p style="margin:16px 0 6px;"><strong>Full Name:</strong> ${
+          esc(payload.fullName) || "(not provided)"
+        }</p>
+        <p style="margin:6px 0;"><strong>Email:</strong> ${
+          payload.email
+            ? `<a href="mailto:${esc(payload.email)}">${esc(payload.email)}</a>`
+            : "(not provided)"
+        }</p>
+        <p style="margin:6px 0;"><strong>Phone:</strong> ${
+          esc(payload.phone) || "(not provided)"
+        }</p>
+  
+        <p style="margin:16px 0 6px;"><strong>Placement:</strong> ${
+          esc(payload.placement) || "(not provided)"
+        }</p>
+        <p style="margin:6px 0;"><strong>Scale:</strong> ${
+          esc(payload.scale) || "(not provided)"
+        }</p>
+        <p style="margin:6px 0;"><strong>Heard About Us:</strong> ${
+          esc(payload.hear) || "(not provided)"
+        }</p>
+        <p style="margin:6px 0;"><strong>Consent:</strong> ${
+          payload.consent ? "Yes" : "No"
+        }</p>
+  
+        <p style="margin:16px 0 6px;"><strong>Artist (param):</strong> ${
+          esc(payload.artist) || "(not provided)"
+        }</p>
+        <p style="margin:6px 0;"><strong>Source Link:</strong> ${
+          payload.source_link
+            ? `<a href="${esc(payload.source_link)}">link</a>`
+            : "(not provided)"
+        }</p>
+      </div>
+    `;
+
+  const text = [
+    `Seven Tattoo — Booking Intake`,
+    ``,
+    `Submitted: ${submitted}`,
+    ``,
+    `Meaning: ${nice(payload.meaning) || "(not provided)"}`,
+    `Vision: ${nice(payload.vision) || "(not provided)"}`,
+    ``,
+    `Full Name: ${nice(payload.fullName) || "(not provided)"}`,
+    `Email: ${nice(payload.email) || "(not provided)"}`,
+    `Phone: ${nice(payload.phone) || "(not provided)"}`,
+    ``,
+    `Placement: ${nice(payload.placement) || "(not provided)"}`,
+    `Scale: ${nice(payload.scale) || "(not provided)"}`,
+    `Heard About Us: ${nice(payload.hear) || "(not provided)"}`,
     `Consent: ${payload.consent ? "Yes" : "No"}`,
-    `Meaning: ${payload.meaning || "(not provided)"}`,
-    `Vision: ${payload.vision || "(not provided)"}`,
-    `Source Link: ${payload.source_link || "(not provided)"}`,
-  ];
+    ``,
+    `Artist (param): ${nice(payload.artist) || "(not provided)"}`,
+    `Source Link: ${nice(payload.source_link) || "(not provided)"}`,
+  ].join("\n");
 
   try {
-    await sgMail.send({
-      to,
-      from,
-      subject,
-      text: lines.join("\n"),
-      html: `<pre style="font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">${lines
-        .map((l) => l.replace(/</g, "&lt;"))
-        .join("\n")}</pre>`,
-    });
+    await sgMail.send({ to, from, subject, text, html });
     return { sent: true };
   } catch (e) {
     const reason = e?.response?.body || e?.message || String(e);
@@ -97,27 +155,19 @@ exports.handler = async (event) => {
   const origin = event.headers?.origin || "";
   const headers = corsHeaders(origin);
 
-  // Preflight — always 200 (avoid undici 204 bug)
-  if (event.httpMethod === "OPTIONS") {
+  if (event.httpMethod === "OPTIONS")
     return { statusCode: 200, headers, body: "" };
-  }
-
-  // Method check
-  if (event.httpMethod !== "POST") {
+  if (event.httpMethod !== "POST")
     return err(headers, 405, "Method Not Allowed");
-  }
 
-  // Content-Type check
   const ct = (
     event.headers["content-type"] ||
     event.headers["Content-Type"] ||
     ""
   ).toLowerCase();
-  if (!ct.includes("application/json")) {
+  if (!ct.includes("application/json"))
     return err(headers, 415, "Unsupported Media Type – use application/json");
-  }
 
-  // Parse JSON
   let data;
   try {
     data = JSON.parse(event.body || "{}");
@@ -125,20 +175,27 @@ exports.handler = async (event) => {
     return err(headers, 400, "Invalid JSON in request body");
   }
 
-  // Honeypot (hidden field "website"): if filled, pretend success
-  if (isFilled(data.website)) {
+  // Honeypot
+  if (isFilled(data.website))
     return ok(headers, { diagnostics: { dropped: true, reason: "honeypot" } });
-  }
 
-  // Required fields (minimal)
-  const missing = ["fullName", "email", "consent"].filter(
-    (f) => !isFilled(data[f])
-  );
-  if (missing.length) {
+  // Require ALL fields (including artist + consent)
+  const missing = [
+    "meaning",
+    "vision",
+    "fullName",
+    "email",
+    "phone",
+    "placement",
+    "scale",
+    "hear",
+    "artist",
+    "consent",
+  ].filter((f) => (f === "consent" ? !data.consent : !isFilled(data[f])));
+
+  if (missing.length)
     return err(headers, 422, "Missing required fields", { missing });
-  }
 
-  // Normalize payload
   const payload = {
     meaning: data.meaning || "",
     vision: data.vision || "",
@@ -153,10 +210,8 @@ exports.handler = async (event) => {
     source_link: data.source_link || data.source || "",
   };
 
-  // Send email if configured
   const email = await maybeSendEmail(payload);
 
-  // Success
   return ok(headers, {
     diagnostics: {
       allowedOrigin: headers["Access-Control-Allow-Origin"],

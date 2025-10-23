@@ -1,0 +1,32 @@
+functionsDirectory = "/Users/seven/seven.github.applicant.form/seven-applicant-form/netlify/functions"
+functionsDirectoryOrigin = "config"
+plugins = []
+headers = []
+redirects = []
+
+[build]
+publish = "/Users/seven/seven.github.applicant.form/seven-applicant-form"
+publishOrigin = "config"
+commandOrigin = "config"
+command = "echo Build step not required"
+functions = "/Users/seven/seven.github.applicant.form/seven-applicant-form/netlify/functions"
+
+[build.environment]
+
+[build.processing]
+
+[build.processing.css]
+
+[build.processing.html]
+
+[build.processing.images]
+
+[build.processing.js]
+
+[build.services]
+
+[functions]
+
+[functions."*"]
+external_node_modules = ["@sendgrid/mail"]
+node_bundler = "esbuild"

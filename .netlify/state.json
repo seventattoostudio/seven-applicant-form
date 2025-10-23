@@ -1,0 +1,21 @@
+{
+	"geolocation": {
+		"data": {
+			"city": "Las Vegas",
+			"country": {
+				"code": "US",
+				"name": "United States"
+			},
+			"subdivision": {
+				"code": "NV",
+				"name": "Nevada"
+			},
+			"timezone": "America/Los_Angeles",
+			"latitude": 36.0798,
+			"longitude": -115.2032,
+			"postalCode": "89118"
+		},
+		"timestamp": 1758673742094
+	},
+	"siteId": "80a1ea47-6f3d-4f95-9dba-ed0304bffe30"
+}
