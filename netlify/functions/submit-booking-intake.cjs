@@ -7,6 +7,7 @@ const ALLOWLIST = [
   "https://seventattoolv.myshopify.com",
   "https://frolicking-sundae-64ec36.netlify.app",
 ];
+
 const pickAllowedOrigin = (origin = "") =>
   ALLOWLIST.includes(origin)
     ? origin
@@ -29,11 +30,13 @@ const ok = (headers, obj = {}) => ({
   headers,
   body: JSON.stringify({ ok: true, ...obj }),
 });
+
 const err = (headers, code, message, more = {}) => ({
   statusCode: code,
   headers,
   body: JSON.stringify({ ok: false, error: message, ...more }),
 });
+
 const isFilled = (v) =>
   v !== undefined && v !== null && String(v).trim() !== "";
 
@@ -63,62 +66,67 @@ async function maybeSendEmail(payload) {
   const parts = [];
   if (nice(payload.scale)) parts.push(payload.scale);
   if (nice(payload.placement)) parts.push(payload.placement);
+
   const subject = `Booking Intake — ${nice(payload.fullName) || "New Lead"}${
     parts.length ? ` (${parts.join(", ")})` : ""
   }`;
+
   const esc = (s) =>
     nice(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
   const submitted = new Date().toISOString();
 
   const html = `
-      <div style="font:14px/1.55 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color:#111;">
-        <h2 style="margin:0 0 10px; font-size:20px;">Seven Tattoo — Booking Intake</h2>
-        <p style="margin:0 0 16px; color:#444;"><strong>Submitted:</strong> ${esc(
-          submitted
-        )}</p>
-  
-        <p style="margin:6px 0;"><strong>Meaning:</strong> ${
-          esc(payload.meaning) || "(not provided)"
-        }</p>
-        <p style="margin:6px 0;"><strong>Vision:</strong> ${
-          esc(payload.vision) || "(not provided)"
-        }</p>
-  
-        <p style="margin:16px 0 6px;"><strong>Full Name:</strong> ${
-          esc(payload.fullName) || "(not provided)"
-        }</p>
-        <p style="margin:6px 0;"><strong>Email:</strong> ${
-          payload.email
-            ? `<a href="mailto:${esc(payload.email)}">${esc(payload.email)}</a>`
-            : "(not provided)"
-        }</p>
-        <p style="margin:6px 0;"><strong>Phone:</strong> ${
-          esc(payload.phone) || "(not provided)"
-        }</p>
-  
-        <p style="margin:16px 0 6px;"><strong>Placement:</strong> ${
-          esc(payload.placement) || "(not provided)"
-        }</p>
-        <p style="margin:6px 0;"><strong>Scale:</strong> ${
-          esc(payload.scale) || "(not provided)"
-        }</p>
-        <p style="margin:6px 0;"><strong>Heard About Us:</strong> ${
-          esc(payload.hear) || "(not provided)"
-        }</p>
-        <p style="margin:6px 0;"><strong>Consent:</strong> ${
-          payload.consent ? "Yes" : "No"
-        }</p>
-  
-        <p style="margin:16px 0 6px;"><strong>Artist (param):</strong> ${
-          esc(payload.artist) || "(not provided)"
-        }</p>
-        <p style="margin:6px 0;"><strong>Source Link:</strong> ${
-          payload.source_link
-            ? `<a href="${esc(payload.source_link)}">link</a>`
-            : "(not provided)"
-        }</p>
-      </div>
-    `;
+        <div style="font:14px/1.55 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color:#111;">
+          <h2 style="margin:0 0 10px; font-size:20px;">Seven Tattoo — Booking Intake</h2>
+          <p style="margin:0 0 16px; color:#444;"><strong>Submitted:</strong> ${esc(
+            submitted
+          )}</p>
+    
+          <p style="margin:6px 0;"><strong>Meaning:</strong> ${
+            esc(payload.meaning) || "(not provided)"
+          }</p>
+          <p style="margin:6px 0;"><strong>Vision:</strong> ${
+            esc(payload.vision) || "(not provided)"
+          }</p>
+    
+          <p style="margin:16px 0 6px;"><strong>Full Name:</strong> ${
+            esc(payload.fullName) || "(not provided)"
+          }</p>
+          <p style="margin:6px 0;"><strong>Email:</strong> ${
+            payload.email
+              ? `<a href="mailto:${esc(payload.email)}">${esc(
+                  payload.email
+                )}</a>`
+              : "(not provided)"
+          }</p>
+          <p style="margin:6px 0;"><strong>Phone:</strong> ${
+            esc(payload.phone) || "(not provided)"
+          }</p>
+    
+          <p style="margin:16px 0 6px;"><strong>Placement:</strong> ${
+            esc(payload.placement) || "(not provided)"
+          }</p>
+          <p style="margin:6px 0;"><strong>Scale:</strong> ${
+            esc(payload.scale) || "(not provided)"
+          }</p>
+          <p style="margin:6px 0;"><strong>Heard About Us:</strong> ${
+            esc(payload.hear) || "(not provided)"
+          }</p>
+          <p style="margin:6px 0;"><strong>Consent:</strong> ${
+            payload.consent ? "Yes" : "No"
+          }</p>
+    
+          <p style="margin:16px 0 6px;"><strong>Artist (param):</strong> ${
+            esc(payload.artist) || "(not provided)"
+          }</p>
+          <p style="margin:6px 0;"><strong>Source Link:</strong> ${
+            payload.source_link
+              ? `<a href="${esc(payload.source_link)}">link</a>`
+              : "(not provided)"
+          }</p>
+        </div>
+      `;
 
   const text = [
     `Seven Tattoo — Booking Intake`,
@@ -142,7 +150,18 @@ async function maybeSendEmail(payload) {
   ].join("\n");
 
   try {
-    await sgMail.send({ to, from, subject, text, html });
+    // Build the message object
+    const msg = { to, from, subject, text, html };
+
+    // 👇 This is the important part: make "Reply" go to the client
+    if (nice(payload.email)) {
+      msg.replyTo = {
+        email: nice(payload.email),
+        name: nice(payload.fullName) || nice(payload.email),
+      };
+    }
+
+    await sgMail.send(msg);
     return { sent: true };
   } catch (e) {
     const reason = e?.response?.body || e?.message || String(e);
@@ -157,6 +176,7 @@ exports.handler = async (event) => {
 
   if (event.httpMethod === "OPTIONS")
     return { statusCode: 200, headers, body: "" };
+
   if (event.httpMethod !== "POST")
     return err(headers, 405, "Method Not Allowed");
 
@@ -165,6 +185,7 @@ exports.handler = async (event) => {
     event.headers["Content-Type"] ||
     ""
   ).toLowerCase();
+
   if (!ct.includes("application/json"))
     return err(headers, 415, "Unsupported Media Type – use application/json");
 
